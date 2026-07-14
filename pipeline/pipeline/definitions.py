@@ -1,12 +1,14 @@
 from dagster import Definitions, EnvVar
 
 from pipeline.assets.co2_intensity import co2_readings_daily
+from pipeline.assets.co2_intensity_synthetic import co2_readings_synthetic
 from pipeline.jobs.ingest_job import ingest_co2_job
+from pipeline.jobs.seed_job import seed_co2_job
 from pipeline.resources.supabase_resource import SupabaseResource
 
 defs = Definitions(
-    assets=[co2_readings_daily],
-    jobs=[ingest_co2_job],
+    assets=[co2_readings_daily, co2_readings_synthetic],
+    jobs=[ingest_co2_job, seed_co2_job],
     # No schedule — jobs are triggered manually (or via external orchestration)
     resources={
         "supabase": SupabaseResource(

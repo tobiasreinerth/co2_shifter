@@ -225,3 +225,9 @@ frontend/.env.local
 # Supabase
 supabase/.branches/
 supabase/.temp/
+
+# macOS
+.DS_Store
+
+# Dagster scratch
+.tmp_dagster_home_*/
