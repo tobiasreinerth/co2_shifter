@@ -7,7 +7,7 @@ real ENTSO-E-backed asset once that integration lands.
 """
 
 import math
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from dagster import AssetExecutionContext, Config, asset
 from pydantic import BaseModel
@@ -53,7 +53,7 @@ def _slot_intensity(slot: int) -> tuple[float, float]:
 def _generate_day(region: str, day: date) -> list[SyntheticSlot]:
     slots = []
     for i in range(SLOTS_PER_DAY):
-        ts = datetime(day.year, day.month, day.day, tzinfo=timezone.utc) + timedelta(minutes=15 * i)
+        ts = datetime(day.year, day.month, day.day, tzinfo=UTC) + timedelta(minutes=15 * i)
         intensity, renewable_pct = _slot_intensity(i)
         slots.append(
             SyntheticSlot(

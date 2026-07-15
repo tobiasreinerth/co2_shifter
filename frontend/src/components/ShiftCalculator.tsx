@@ -20,7 +20,8 @@ import {
 } from "@/lib/shift-calculator";
 import type { LoadProfileSlots, ShiftAnalysisResult } from "@/types";
 
-const REGIONS = ["DE", "FR", "GB", "ES", "NL"];
+// No GB: Great Britain stopped publishing to ENTSO-E in June 2021 (post-Brexit TCA)
+const REGIONS = ["DE", "FR", "ES", "NL"];
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);

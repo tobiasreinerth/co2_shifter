@@ -4,7 +4,7 @@ One Dagster run = one (region, date) pair → 96 rows upserted into co2_readings
 Triggered manually or via the daily backfill job.
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 from dagster import AssetExecutionContext, Config, asset
@@ -33,7 +33,7 @@ class IntensitySlot(BaseModel):
 def _fetch_day_history(region: str, day: date, api_key: str) -> list[IntensitySlot]:
     """Fetches ~96 15-min intensity slots for a given day via Electricity Maps history endpoint."""
     # The history endpoint returns the last 24 h relative to a given datetime
-    day_end = datetime(day.year, day.month, day.day, 23, 59, tzinfo=timezone.utc)
+    day_end = datetime(day.year, day.month, day.day, 23, 59, tzinfo=UTC)
     url = (
         f"https://api.electricitymaps.com/v3/carbon-intensity/history"
         f"?zone={region}&datetime={day_end.strftime('%Y-%m-%dT%H:%M:%SZ')}"
@@ -69,7 +69,7 @@ def _fetch_day_history(region: str, day: date, api_key: str) -> list[IntensitySl
     required_resource_keys={"supabase", "electricity_maps_api_key"},
 )
 def co2_readings_daily(context: AssetExecutionContext, config: IntensityFetchConfig) -> None:
-    api_key: str = context.resources.electricity_maps_api_key
+    api_key: str = context.resources.electricity_maps_api_key.key
     supabase: SupabaseResource = context.resources.supabase
 
     target_date = (

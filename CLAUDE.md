@@ -28,7 +28,8 @@ The result is a bar chart showing total daily CO2 for every possible shift, high
 ## Stack
 
 - **Data pipeline**: Python + Dagster, run on-demand (no polling schedule)
-- **CO2 API**: Electricity Maps — `api.electricitymaps.com/v3/carbon-intensity/history`
+- **CO2 API (primary)**: ENTSO-E Transparency Platform — `web-api.tp.entsoe.eu/api`, documentType A75 (actual generation per type); intensity derived as generation-weighted mean of lifecycle emission factors (production-based, ignores imports/exports)
+- **CO2 API (legacy/alternative)**: Electricity Maps — `api.electricitymaps.com/v3/carbon-intensity/history`
 - **Database**: Supabase (Postgres) — `supabase-py` in pipeline, `@supabase/supabase-js` in frontend
 - **Frontend**: Next.js 15 App Router, TypeScript, Tailwind CSS v4, Recharts
 
@@ -64,6 +65,7 @@ supabase db push     # apply migrations
 
 ### pipeline/.env
 ```
+ENTSOE_API_KEY=
 ELECTRICITY_MAPS_API_KEY=
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
@@ -87,9 +89,13 @@ See `supabase/migrations/001_initial_schema.sql`.
 | `load_profile_slots` | 96 rows per profile — kWh per 15-min slot |
 | `shift_analyses` | Saved analysis results |
 
-## Dagster Asset
+## Dagster Assets
 
-`co2_readings_daily` — given `{region, fetch_date}`, fetches ~96 slots from Electricity Maps history endpoint and upserts into `co2_readings`. No schedule — triggered manually or via external automation.
+All upsert into `co2_readings` on `(region, timestamp)`; no schedule — triggered manually or via external automation. Config: `{region, fetch_date}`.
+
+- `co2_readings_entsoe` (job `ingest_entsoe_job`) — fetches actual generation per production type from ENTSO-E (A75) and derives 15-min production-based CO2 intensity via lifecycle emission factors. Regions: DE, FR, ES, NL (EIC map in the asset; GB unavailable — stopped publishing to ENTSO-E post-Brexit).
+- `co2_readings_synthetic` (job `seed_co2_job`) — hardcoded stylized curve, dev/demo placeholder; real data overwrites it for the same day.
+- `co2_readings_daily` (job `ingest_co2_job`) — legacy Electricity Maps history fetch.
 
 ## Frontend Components
 
