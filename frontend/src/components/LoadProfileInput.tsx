@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { Fragment, useRef } from "react";
 import type { LoadProfileSlots } from "@/types";
 import { SLOTS_PER_DAY } from "@/lib/shift-calculator";
 
@@ -116,11 +116,11 @@ export function LoadProfileInput({ slots, onChange }: Props) {
                 {[0, 1, 2, 3].map((col) => {
                   const i = row * 4 + col;
                   return (
-                    <>
-                      <td key={`l${i}`} className="px-2 py-0.5 text-gray-500">
+                    <Fragment key={i}>
+                      <td className="px-2 py-0.5 text-gray-500">
                         {slotLabel(i)}
                       </td>
-                      <td key={`v${i}`} className="px-2 py-0.5">
+                      <td className="px-2 py-0.5">
                         <input
                           type="number"
                           min={0}
@@ -130,7 +130,7 @@ export function LoadProfileInput({ slots, onChange }: Props) {
                           className="w-16 rounded border px-1 py-0 text-right"
                         />
                       </td>
-                    </>
+                    </Fragment>
                   );
                 })}
               </tr>
