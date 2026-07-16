@@ -7,7 +7,7 @@ Triggered manually or via the daily backfill job.
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
-from dagster import AssetExecutionContext, Config, asset
+from dagster import AssetExecutionContext, Config, Failure, asset
 from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -17,11 +17,15 @@ SLOTS_PER_DAY = 96  # 24h × 4
 
 
 class IntensityFetchConfig(Config):
+    """Run config: which region/day to ingest. Empty fetch_date means yesterday."""
+
     region: str = "DE"
     fetch_date: str = ""  # ISO date string, e.g. "2024-06-01"; defaults to yesterday
 
 
 class IntensitySlot(BaseModel):
+    """One 15-min co2_readings row from the Electricity Maps history endpoint."""
+
     region: str
     timestamp: datetime
     intensity_gco2_kwh: float
@@ -29,9 +33,17 @@ class IntensitySlot(BaseModel):
     source: str = "electricitymaps"
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
 def _fetch_day_history(region: str, day: date, api_key: str) -> list[IntensitySlot]:
-    """Fetches ~96 15-min intensity slots for a given day via Electricity Maps history endpoint."""
+    """Fetches ~96 15-min intensity slots for a given day via Electricity Maps history endpoint.
+
+    Retries transient failures 3× with backoff; HTTP errors include the response
+    body snippet (Electricity Maps returns the reason as JSON, e.g. bad token).
+    """
     # The history endpoint returns the last 24 h relative to a given datetime
     day_end = datetime(day.year, day.month, day.day, 23, 59, tzinfo=UTC)
     url = (
@@ -40,7 +52,13 @@ def _fetch_day_history(region: str, day: date, api_key: str) -> list[IntensitySl
     )
     with httpx.Client(timeout=20) as client:
         resp = client.get(url, headers={"auth-token": api_key})
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                f"Electricity Maps request failed with HTTP {resp.status_code}: "
+                f"{resp.text[:300]}"
+            ) from exc
         data = resp.json()
 
     slots = []
@@ -69,6 +87,7 @@ def _fetch_day_history(region: str, day: date, api_key: str) -> list[IntensitySl
     required_resource_keys={"supabase", "electricity_maps_api_key"},
 )
 def co2_readings_daily(context: AssetExecutionContext, config: IntensityFetchConfig) -> None:
+    """Ingests one (region, date) of Electricity Maps CO2 intensity into co2_readings."""
     api_key: str = context.resources.electricity_maps_api_key.key
     supabase: SupabaseResource = context.resources.supabase
 
@@ -79,7 +98,14 @@ def co2_readings_daily(context: AssetExecutionContext, config: IntensityFetchCon
     )
 
     context.log.info(f"Fetching {config.region} for {target_date}")
-    slots = _fetch_day_history(config.region, target_date, api_key)
+    try:
+        slots = _fetch_day_history(config.region, target_date, api_key)
+    except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
+        raise Failure(
+            description=(
+                f"Electricity Maps fetch failed for {config.region} / {target_date}: {exc}"
+            )
+        ) from exc
 
     if not slots:
         context.log.warning("No slots returned — check region and date.")
@@ -96,7 +122,5 @@ def co2_readings_daily(context: AssetExecutionContext, config: IntensityFetchCon
         for s in slots
     ]
 
-    supabase.get_client().table("co2_readings").upsert(
-        rows, on_conflict="region,timestamp"
-    ).execute()
+    supabase.upsert_co2_readings(rows)
     context.log.info(f"Upserted {len(rows)} slots for {config.region} / {target_date}")

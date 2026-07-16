@@ -3,18 +3,62 @@
 import { Fragment, useRef } from "react";
 import type { LoadProfileSlots } from "@/types";
 import { SLOTS_PER_DAY } from "@/lib/shift-calculator";
+import { EXAMPLE_PROFILES } from "@/lib/example-profiles";
 
 interface Props {
   slots: LoadProfileSlots;
   onChange: (slots: LoadProfileSlots) => void;
 }
 
+const SPARK_WIDTH = 200;
+const SPARK_HEIGHT = 40;
+
+/** Builds an SVG polyline path for a 96-value profile, scaled to the viewBox. */
+function sparklinePoints(values: number[]): string {
+  const max = Math.max(...values, 1);
+  const stepX = SPARK_WIDTH / (values.length - 1);
+  return values
+    .map((v, i) => {
+      const x = i * stepX;
+      const y = SPARK_HEIGHT - (v / max) * SPARK_HEIGHT;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+}
+
+/** Small preview chart for one example profile — shape only, no axes. */
+function Sparkline({ values }: { values: number[] }) {
+  return (
+    <svg
+      viewBox={`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`}
+      className="h-10 w-full"
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      <polyline
+        points={sparklinePoints(values)}
+        fill="none"
+        stroke="#16a34a"
+        strokeWidth={2}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/** Slot index → "HH:MM" start-of-slot label (0 → "00:00", 95 → "23:45"). */
 function slotLabel(i: number): string {
   const h = Math.floor(i / 4);
   const m = (i % 4) * 15;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+/**
+ * Parses an uploaded load-profile CSV into 96 kWh values.
+ * Accepts one value per row (last numeric column wins, comma decimals ok);
+ * returns an error message string instead of throwing on invalid input.
+ */
 function parseCSV(text: string): LoadProfileSlots | string {
   const lines = text
     .split(/\r?\n/)
@@ -39,6 +83,10 @@ function parseCSV(text: string): LoadProfileSlots | string {
   return values;
 }
 
+/**
+ * 96-slot kWh entry: a compact 24×4 editable table plus CSV upload.
+ * Controlled component — the parent owns the slots array.
+ */
 export function LoadProfileInput({ slots, onChange }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -71,6 +119,26 @@ export function LoadProfileInput({ slots, onChange }: Props) {
 
   return (
     <div className="space-y-4">
+      <div>
+        <p className="mb-2 text-sm text-gray-500">
+          Start from an example profile, or upload/enter your own below.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {EXAMPLE_PROFILES.map((profile) => (
+            <button
+              key={profile.id}
+              type="button"
+              onClick={() => onChange(profile.slots)}
+              className="rounded-lg border p-3 text-left hover:border-green-600 hover:bg-green-50"
+            >
+              <p className="text-sm font-medium">{profile.name}</p>
+              <p className="mt-0.5 text-xs text-gray-500">{profile.description}</p>
+              <Sparkline values={profile.slots} />
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="flex items-center gap-3">
         <button
           type="button"

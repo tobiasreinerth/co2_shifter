@@ -3,13 +3,14 @@
 from datetime import UTC, date, datetime
 
 from pipeline.assets.co2_intensity_entsoe import (
-    SLOTS_PER_DAY,
     compute_intensity_slots,
     parse_generation_xml,
 )
+from tests.conftest import make_factors
 
 NS = "urn:iec62325.351:tc57wg16:451-6:generationloaddocument:3:0"
 DAY = date(2026, 7, 14)
+DAY_START = datetime(2026, 7, 14, tzinfo=UTC)
 
 
 def _doc(timeseries_xml: str) -> str:
@@ -24,6 +25,7 @@ def _series(
     points: list[tuple[int, float]],
     resolution: str = "PT15M",
     start: str = "2026-07-14T00:00Z",
+    end: str = "2026-07-15T00:00Z",
     domain_tag: str = "inBiddingZone_Domain.mRID",
 ) -> str:
     pts = "".join(
@@ -35,7 +37,7 @@ def _series(
         f"<{domain_tag}>10Y1001A1001A83F</{domain_tag}>"
         f"<MktPSRType><psrType>{psr}</psrType></MktPSRType>"
         "<Period>"
-        f"<timeInterval><start>{start}</start><end>2026-07-15T00:00Z</end></timeInterval>"
+        f"<timeInterval><start>{start}</start><end>{end}</end></timeInterval>"
         f"<resolution>{resolution}</resolution>"
         f"{pts}"
         "</Period>"
@@ -43,35 +45,56 @@ def _series(
     )
 
 
+def _ts(hour: int, minute: int = 0, day: int = 14) -> datetime:
+    return datetime(2026, 7, day, hour, minute, tzinfo=UTC)
+
+
 def test_parse_15min_series() -> None:
     xml = _doc(_series("B04", [(i, 1000.0) for i in range(1, 97)]))
-    series = parse_generation_xml(xml, DAY)
+    generation = parse_generation_xml(xml)
 
-    assert len(series) == 1
-    assert series[0].psr_type == "B04"
-    assert len(series[0].slot_mwh) == SLOTS_PER_DAY
+    assert set(generation) == {"B04"}
+    slots = generation["B04"]
+    assert len(slots) == 96
     # 1000 MW for 15 min = 250 MWh per slot
-    assert series[0].slot_mwh[0] == 250.0
-    assert series[0].slot_mwh[95] == 250.0
+    assert slots[_ts(0, 0)] == 250.0
+    assert slots[_ts(23, 45)] == 250.0
 
 
 def test_parse_hourly_series_expands_to_15min_slots() -> None:
     xml = _doc(_series("B19", [(i, 400.0) for i in range(1, 25)], resolution="PT60M"))
-    series = parse_generation_xml(xml, DAY)
+    generation = parse_generation_xml(xml)
 
-    assert len(series) == 1
     # 400 MW for each of 4 sub-slots = 100 MWh per 15-min slot
-    assert all(mwh == 100.0 for mwh in series[0].slot_mwh)
+    assert len(generation["B19"]) == 96
+    assert all(mwh == 100.0 for mwh in generation["B19"].values())
+
+
+def test_parse_multi_day_document() -> None:
+    # One hourly Period spanning two full days — chunked fetching returns these
+    xml = _doc(
+        _series(
+            "B04",
+            [(i, 400.0) for i in range(1, 49)],
+            resolution="PT60M",
+            end="2026-07-16T00:00Z",
+        )
+    )
+    generation = parse_generation_xml(xml)
+
+    assert len(generation["B04"]) == 192  # 2 days × 96 slots
+    assert generation["B04"][_ts(0, 0, day=14)] == 100.0
+    assert generation["B04"][_ts(23, 45, day=15)] == 100.0
 
 
 def test_sparse_points_are_forward_filled() -> None:
     # Positions 2..95 omitted → repeat position 1's value; 96 present again
     xml = _doc(_series("B04", [(1, 1000.0), (96, 2000.0)]))
-    series = parse_generation_xml(xml, DAY)
+    slots = parse_generation_xml(xml)["B04"]
 
-    assert series[0].slot_mwh[0] == 250.0
-    assert series[0].slot_mwh[50] == 250.0  # forward-filled
-    assert series[0].slot_mwh[95] == 500.0
+    assert slots[_ts(0, 0)] == 250.0
+    assert slots[_ts(12, 30)] == 250.0  # forward-filled
+    assert slots[_ts(23, 45)] == 500.0
 
 
 def test_consumption_series_is_skipped() -> None:
@@ -79,31 +102,41 @@ def test_consumption_series_is_skipped() -> None:
         _series("B10", [(1, 500.0)], domain_tag="outBiddingZone_Domain.mRID")
         + _series("B04", [(1, 1000.0)])
     )
-    series = parse_generation_xml(xml, DAY)
+    generation = parse_generation_xml(xml)
 
-    assert [s.psr_type for s in series] == ["B04"]
+    assert set(generation) == {"B04"}
 
 
-def test_intensity_is_generation_weighted_mean() -> None:
+def test_intensity_is_generation_weighted_mean_with_mix() -> None:
     # 3000 MW gas (490 g/kWh) + 1000 MW wind onshore (11 g/kWh), full day
     xml = _doc(
         _series("B04", [(i, 3000.0) for i in range(1, 97)])
         + _series("B19", [(i, 1000.0) for i in range(1, 97)])
     )
-    slots = compute_intensity_slots("DE", DAY, parse_generation_xml(xml, DAY))
+    slots = compute_intensity_slots("DE", parse_generation_xml(xml), make_factors())
 
-    assert len(slots) == SLOTS_PER_DAY
+    assert len(slots) == 96
     expected = (3000 * 490 + 1000 * 11) / 4000  # 370.25
     assert slots[0].intensity_gco2_kwh == round(expected, 1)
     assert slots[0].renewable_percentage == 25.0
-    assert slots[0].timestamp == datetime(2026, 7, 14, tzinfo=UTC)
+    assert slots[0].generation_mix == {"fossil_gas": 75.0, "wind_onshore": 25.0}
+    assert slots[0].timestamp == DAY_START
     assert slots[0].source == "entsoe"
+
+
+def test_unknown_psr_type_falls_back_to_other() -> None:
+    xml = _doc(_series("B99", [(i, 1000.0) for i in range(1, 97)]))
+    slots = compute_intensity_slots("DE", parse_generation_xml(xml), make_factors())
+
+    assert slots[0].intensity_gco2_kwh == 700.0  # the B20 "other" factor
+    assert slots[0].renewable_percentage == 0.0
+    assert slots[0].generation_mix == {"other": 100.0}
 
 
 def test_slots_without_data_are_dropped() -> None:
     # Only the first hour has data (publication lag for the rest of the day)
     xml = _doc(_series("B04", [(i, 1000.0) for i in range(1, 5)]))
-    slots = compute_intensity_slots("DE", DAY, parse_generation_xml(xml, DAY))
+    slots = compute_intensity_slots("DE", parse_generation_xml(xml), make_factors())
 
     assert len(slots) == 4
-    assert slots[-1].timestamp == datetime(2026, 7, 14, 0, 45, tzinfo=UTC)
+    assert slots[-1].timestamp == _ts(0, 45)

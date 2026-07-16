@@ -21,11 +21,15 @@ EVENING_PEAK_GCO2_KWH = 150.0
 
 
 class SyntheticSeedConfig(Config):
+    """Run config: which region/day to seed. Empty fetch_date means today."""
+
     region: str = "DE"
     fetch_date: str = ""  # ISO date string; defaults to today
 
 
 class SyntheticSlot(BaseModel):
+    """One 15-min co2_readings row from the synthetic curve."""
+
     region: str
     timestamp: datetime
     intensity_gco2_kwh: float
@@ -51,6 +55,7 @@ def _slot_intensity(slot: int) -> tuple[float, float]:
 
 
 def _generate_day(region: str, day: date) -> list[SyntheticSlot]:
+    """Builds the full 96-slot synthetic day for a region, timestamps in UTC."""
     slots = []
     for i in range(SLOTS_PER_DAY):
         ts = datetime(day.year, day.month, day.day, tzinfo=UTC) + timedelta(minutes=15 * i)
@@ -76,6 +81,7 @@ def _generate_day(region: str, day: date) -> list[SyntheticSlot]:
     required_resource_keys={"supabase"},
 )
 def co2_readings_synthetic(context: AssetExecutionContext, config: SyntheticSeedConfig) -> None:
+    """Seeds one (region, date) of synthetic CO2 intensity into co2_readings."""
     supabase: SupabaseResource = context.resources.supabase
 
     target_date = (
@@ -96,7 +102,5 @@ def co2_readings_synthetic(context: AssetExecutionContext, config: SyntheticSeed
         for s in slots
     ]
 
-    supabase.get_client().table("co2_readings").upsert(
-        rows, on_conflict="region,timestamp"
-    ).execute()
+    supabase.upsert_co2_readings(rows)
     context.log.info(f"Upserted {len(rows)} synthetic slots for {config.region} / {target_date}")

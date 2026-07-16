@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+/** Landing page: value proposition + link into the dashboard. */
 export default function Home() {
   return (
     <div className="space-y-6">
