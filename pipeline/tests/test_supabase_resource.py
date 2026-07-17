@@ -85,6 +85,25 @@ def test_upsert_wraps_postgrest_errors_in_failure() -> None:
         _make_resource({"co2_readings": table}).upsert_co2_readings([{"region": "DE"}])
 
 
+def test_upsert_day_ahead_prices_targets_region_timestamp_conflict() -> None:
+    table = _RecordingTable()
+    rows = [{"region": "DE", "timestamp": "2026-07-14T00:00:00+00:00", "price": 45.0}]
+
+    _make_resource({"day_ahead_prices": table}).upsert_day_ahead_prices(rows)
+
+    assert table.rows == rows
+    assert table.on_conflict == "region,timestamp"
+
+
+def test_upsert_day_ahead_prices_wraps_postgrest_errors_in_failure() -> None:
+    table = _RecordingTable(
+        error=APIError({"message": "permission denied for table day_ahead_prices"})
+    )
+
+    with pytest.raises(Failure, match="permission denied for table day_ahead_prices"):
+        _make_resource({"day_ahead_prices": table}).upsert_day_ahead_prices([{"region": "DE"}])
+
+
 def test_fetch_emission_factors_returns_keyed_models() -> None:
     table = _RecordingTable(
         select_data=[

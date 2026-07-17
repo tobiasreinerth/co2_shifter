@@ -1,9 +1,18 @@
 "use client";
 
 import { Fragment, useRef } from "react";
+import {
+  Bar,
+  ComposedChart,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+} from "recharts";
 import type { LoadProfileSlots } from "@/types";
-import { SLOTS_PER_DAY } from "@/lib/shift-calculator";
-import { EXAMPLE_PROFILES } from "@/lib/example-profiles";
+import { SLOTS_PER_DAY, hourTickLabel, slotLabel } from "@/lib/shift-calculator";
+import { DAILY_TOTAL_KWH, EXAMPLE_PROFILES } from "@/lib/example-profiles";
 
 interface Props {
   slots: LoadProfileSlots;
@@ -26,7 +35,7 @@ function sparklinePoints(values: number[]): string {
     .join(" ");
 }
 
-/** Small preview chart for one example profile — shape only, no axes. */
+/** Small preview chart for one example profile - shape only, no axes. */
 function Sparkline({ values }: { values: number[] }) {
   return (
     <svg
@@ -47,11 +56,35 @@ function Sparkline({ values }: { values: number[] }) {
   );
 }
 
-/** Slot index → "HH:MM" start-of-slot label (0 → "00:00", 95 → "23:45"). */
-function slotLabel(i: number): string {
-  const h = Math.floor(i / 4);
-  const m = (i % 4) * 15;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+/**
+ * Live preview of the current 96-slot profile - updates on every example
+ * pick, CSV upload, and manual table edit alike, since it's driven by the
+ * same controlled `slots` array as the table below.
+ */
+function ProfileChart({ slots }: { slots: LoadProfileSlots }) {
+  const chartData = slots.map((v, i) => ({ slot: i, kwh: v }));
+  return (
+    <ResponsiveContainer width="100%" height={140}>
+      <ComposedChart data={chartData}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#d1d5db" />
+        <XAxis
+          dataKey="slot"
+          tickFormatter={(slot: number) => hourTickLabel(slot)}
+          tick={{ fontSize: 10 }}
+          interval={0}
+          tickLine={false}
+        />
+        <YAxis tick={{ fontSize: 10 }} unit=" kWh" />
+        <Tooltip
+          formatter={(v) => [`${v} kWh`, "Load"]}
+          labelFormatter={(_, payload) =>
+            payload?.[0] ? `Slot ${payload[0].payload.slot} · ${slotLabel(payload[0].payload.slot)}` : ""
+          }
+        />
+        <Bar dataKey="kwh" fill="#000000" radius={[1, 1, 0, 0]} />
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
 }
 
 /**
@@ -66,7 +99,7 @@ function parseCSV(text: string): LoadProfileSlots | string {
     .filter(Boolean);
 
   // Accept: single-column CSV (96 rows of kWh values)
-  // or two-column CSV (time, kwh) — we just take the last numeric column
+  // or two-column CSV (time, kwh) - we just take the last numeric column
   const values: number[] = [];
   for (const line of lines) {
     const cols = line.split(/[,;\t]/);
@@ -85,7 +118,7 @@ function parseCSV(text: string): LoadProfileSlots | string {
 
 /**
  * 96-slot kWh entry: a compact 24×4 editable table plus CSV upload.
- * Controlled component — the parent owns the slots array.
+ * Controlled component - the parent owns the slots array.
  */
 export function LoadProfileInput({ slots, onChange }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -121,7 +154,7 @@ export function LoadProfileInput({ slots, onChange }: Props) {
     <div className="space-y-4">
       <div>
         <p className="mb-2 text-sm text-gray-500">
-          Start from an example profile, or upload/enter your own below.
+          {`Not sure where to start? Pick a pattern close to your operation - every value stays editable afterward. All four examples use about ${DAILY_TOTAL_KWH / 1000} MWh of energy per day, so they're directly comparable - edit any value to match your own volume.`}
         </p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {EXAMPLE_PROFILES.map((profile) => (
@@ -145,7 +178,7 @@ export function LoadProfileInput({ slots, onChange }: Props) {
           onClick={() => fileRef.current?.click()}
           className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-gray-50"
         >
-          Upload CSV
+          Upload your own CSV
         </button>
         <input
           ref={fileRef}
@@ -155,13 +188,18 @@ export function LoadProfileInput({ slots, onChange }: Props) {
           onChange={handleCSV}
         />
         <span className="text-sm text-gray-500">
-          CSV: 96 rows, one kWh value per row (= one 15-min slot, 00:00 first)
+          One column of kWh values, 96 rows - one row per 15-minute slot, starting at 00:00.
         </span>
       </div>
 
-      <p className="text-xs text-gray-400">
-        Total daily consumption: <strong>{totalKwh.toFixed(1)} kWh</strong>
-      </p>
+      <div>
+        <p className="mb-2 text-sm font-medium text-gray-600">Your current schedule</p>
+        <ProfileChart slots={slots} />
+        <p className="mt-1 text-xs text-gray-400">
+          Total for the day: <strong>{totalKwh.toFixed(1)} kWh</strong> - check this looks right
+          before running the calculations below.
+        </p>
+      </div>
 
       {/* Compact grid: 4 columns × 24 rows = 96 slots */}
       <div className="max-h-72 overflow-y-auto rounded-lg border">

@@ -1,14 +1,36 @@
 import type {
+  AvgGenerationMixSlot,
   AvgIntensitySlot,
   BoundedReshapeResult,
   Co2Reading,
   LoadProfileSlots,
-  ShiftAnalysisResult,
-  ShiftPoint,
 } from "@/types";
+import { fetchEmissionFactors } from "./emission-factors";
 import { supabase } from "./supabase";
 
 export const SLOTS_PER_DAY = 96; // 24 h × 4
+
+// ── Shared chart slot labels ────────────────────────────────────────────────────
+// Every 96-slot chart in the app uses these two - slotLabel for tooltips (needs
+// to be unique/exact per slot) and hourTickLabel for axis ticks (deliberately
+// sparse, blank except on the hour, to avoid a cluttered x-axis). Charts must
+// key their XAxis dataKey on the numeric slot index, never on hourTickLabel's
+// output - many slots share the same blank string, and Recharts can't build an
+// unambiguous category scale from a dataKey with duplicate values, which breaks
+// hover/tooltip resolution (it silently snaps to the first matching row instead
+// of the actually-hovered one).
+
+/** Slot index → exact "HH:MM" start-of-slot label (0 → "00:00", 95 → "23:45"). */
+export function slotLabel(i: number): string {
+  const h = Math.floor(i / 4);
+  const m = (i % 4) * 15;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/** Slot index → "HH:00" on the hour, blank otherwise - for sparse axis ticks only. */
+export function hourTickLabel(i: number): string {
+  return i % 4 === 0 ? `${String(Math.floor(i / 4)).padStart(2, "0")}:00` : "";
+}
 
 // ── Data fetching ──────────────────────────────────────────────────────────────
 
@@ -81,14 +103,14 @@ export async function fetchLatestDayIntensity(
 
 // ── Shared time-period selection (Co2Chart + ShiftCalculator) ──────────────────
 
-export type DataMode = "latest" | "avg30" | "avg91";
+export type DataMode = "latest" | "avg28" | "avg91";
 
-/** Shared select labels — Co2Chart and ShiftCalculator both read from here
+/** Shared select labels - Co2Chart and ShiftCalculator both read from here
  * so the two never drift apart on wording. */
 export const DATA_MODE_LABELS: Record<DataMode, string> = {
-  latest: "Latest available day",
-  avg30: "1-month average",
-  avg91: "3-month average",
+  latest: "1 day",
+  avg28: "4 weeks (28 days)",
+  avg91: "3 months (91 days)",
 };
 
 export interface IntensityCurve {
@@ -99,7 +121,7 @@ export interface IntensityCurve {
 }
 
 /**
- * Resolves a DataMode into one 96-slot intensity curve — the single fetch
+ * Resolves a DataMode into one 96-slot intensity curve - the single fetch
  * path shared by Co2Chart and ShiftCalculator so the two can never disagree
  * about what "the current period" actually contains. Returns null when the
  * region has no matching data.
@@ -126,12 +148,12 @@ export async function fetchIntensityCurve(
     return {
       intensitySlots: forwardFill(intensitySlots),
       renewableSlots,
-      label: `Latest available day — ${latest.date}`,
+      label: `1 day - ${latest.date}`,
       coverageDays: null,
     };
   }
 
-  const windowDays = mode === "avg30" ? 30 : 91;
+  const windowDays = mode === "avg28" ? 28 : 91;
   const rows = await fetchAverageIntensity(region, windowDays);
   if (rows.length === 0) return null;
 
@@ -144,7 +166,108 @@ export async function fetchIntensityCurve(
   return {
     intensitySlots: forwardFill(intensitySlots),
     renewableSlots,
-    label: windowDays === 30 ? "1-month average" : "3-month average",
+    label: DATA_MODE_LABELS[windowDays === 28 ? "avg28" : "avg91"],
+    coverageDays: Math.max(...rows.map((r) => r.days_covered)),
+  };
+}
+
+/**
+ * Loads the average renewable/nuclear/fossil generation-mix curve for a
+ * region over the trailing `windowDays` days via the
+ * avg_generation_mix_by_slot() database function.
+ */
+export async function fetchAverageGenerationMix(
+  region: string,
+  windowDays: number
+): Promise<AvgGenerationMixSlot[]> {
+  const { data, error } = await supabase.rpc("avg_generation_mix_by_slot", {
+    p_region: region,
+    p_days: windowDays,
+  });
+
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+export interface GenerationMixCurve {
+  renewableSlots: number[];
+  nuclearSlots: number[];
+  fossilSlots: number[];
+  label: string;
+  coverageDays: number | null;
+}
+
+/**
+ * Resolves a DataMode into a 96-slot renewable/nuclear/fossil breakdown for
+ * the Step 2 stacked chart. "latest" categorizes each reading's raw
+ * generation_mix client-side (each source's bucket comes from
+ * emission_factors); avg28/avg91 do the same categorization in SQL over the
+ * whole window via avg_generation_mix_by_slot(). Only ENTSO-E-sourced
+ * readings carry generation_mix, so regions without ENTSO-E history return
+ * null here even if they have plain intensity data.
+ */
+export async function fetchGenerationMixCurve(
+  region: string,
+  mode: DataMode
+): Promise<GenerationMixCurve | null> {
+  const renewableSlots = new Array<number>(SLOTS_PER_DAY).fill(0);
+  const nuclearSlots = new Array<number>(SLOTS_PER_DAY).fill(0);
+  const fossilSlots = new Array<number>(SLOTS_PER_DAY).fill(0);
+  const filled = new Array<boolean>(SLOTS_PER_DAY).fill(false);
+
+  if (mode === "latest") {
+    const latest = await fetchLatestDayIntensity(region);
+    if (!latest || latest.readings.length === 0) return null;
+
+    const factors = await fetchEmissionFactors();
+    const bucketBySource = new Map<string, "renewable" | "nuclear" | "fossil">();
+    for (const f of factors) {
+      bucketBySource.set(
+        f.source_name,
+        f.source_name === "nuclear" ? "nuclear" : f.is_renewable ? "renewable" : "fossil"
+      );
+    }
+
+    for (const r of latest.readings) {
+      if (!r.generation_mix) continue;
+      const dt = new Date(r.timestamp);
+      const slot = (dt.getUTCHours() * 60 + dt.getUTCMinutes()) / 15;
+      if (slot < 0 || slot >= SLOTS_PER_DAY) continue;
+      filled[slot] = true;
+      for (const [source, pct] of Object.entries(r.generation_mix)) {
+        const bucket = bucketBySource.get(source) ?? "fossil";
+        if (bucket === "renewable") renewableSlots[slot] += pct;
+        else if (bucket === "nuclear") nuclearSlots[slot] += pct;
+        else fossilSlots[slot] += pct;
+      }
+    }
+    if (!filled.some(Boolean)) return null;
+    return {
+      renewableSlots: forwardFillMasked(renewableSlots, filled),
+      nuclearSlots: forwardFillMasked(nuclearSlots, filled),
+      fossilSlots: forwardFillMasked(fossilSlots, filled),
+      label: DATA_MODE_LABELS.latest,
+      coverageDays: null,
+    };
+  }
+
+  const windowDays = mode === "avg28" ? 28 : 91;
+  const rows = await fetchAverageGenerationMix(region, windowDays);
+  if (rows.length === 0) return null;
+
+  for (const r of rows) {
+    if (r.slot_index >= 0 && r.slot_index < SLOTS_PER_DAY) {
+      renewableSlots[r.slot_index] = r.avg_renewable_percentage;
+      nuclearSlots[r.slot_index] = r.avg_nuclear_percentage;
+      fossilSlots[r.slot_index] = r.avg_fossil_percentage;
+      filled[r.slot_index] = true;
+    }
+  }
+  return {
+    renewableSlots: forwardFillMasked(renewableSlots, filled),
+    nuclearSlots: forwardFillMasked(nuclearSlots, filled),
+    fossilSlots: forwardFillMasked(fossilSlots, filled),
+    label: DATA_MODE_LABELS[windowDays === 28 ? "avg28" : "avg91"],
     coverageDays: Math.max(...rows.map((r) => r.days_covered)),
   };
 }
@@ -156,6 +279,23 @@ function forwardFill(arr: number[]): number[] {
   let last = arr.find((v) => v > 0) ?? 0;
   for (let i = 0; i < SLOTS_PER_DAY; i++) {
     if (arr[i] > 0) last = arr[i];
+    else arr[i] = last;
+  }
+  return arr;
+}
+
+/**
+ * Fills unwritten slots with the nearest previous written value, in place.
+ * Uses an explicit `filled` mask rather than "value > 0 means present"
+ * (unlike forwardFill() above) - correct wherever 0 is a legitimate value,
+ * like a generation-mix bucket's share when the grid ran on none of it, or
+ * a negative day-ahead price during oversupply.
+ */
+export function forwardFillMasked(arr: number[], filled: boolean[]): number[] {
+  const firstFilledIdx = filled.findIndex(Boolean);
+  let last = firstFilledIdx >= 0 ? arr[firstFilledIdx] : 0;
+  for (let i = 0; i < SLOTS_PER_DAY; i++) {
+    if (filled[i]) last = arr[i];
     else arr[i] = last;
   }
   return arr;
@@ -186,61 +326,12 @@ export function computeCo2ForShift(
   return total;
 }
 
-/** Formats a slot shift as an hour label, e.g. -4 → "-1 h", 0 → "0 h (baseline)". */
-export function shiftLabel(slots: number): string {
-  const hours = slots / 4;
-  if (hours === 0) return "0 h (baseline)";
-  const sign = hours > 0 ? "+" : "";
-  return `${sign}${hours % 1 === 0 ? hours : hours.toFixed(2)} h`;
-}
-
-/**
- * Tries all shifts from -maxShiftH hours to +maxShiftH hours (in 15-min steps)
- * and returns the full analysis result with the optimum.
- */
-export function analyzeShifts(
-  loadSlots: LoadProfileSlots,
-  intensitySlots: number[],
-  maxShiftH = 12
-): ShiftAnalysisResult {
-  const maxSlots = maxShiftH * 4;
-  const baselineCo2G = computeCo2ForShift(loadSlots, intensitySlots, 0);
-
-  const curve: ShiftPoint[] = [];
-  let optimalShiftSlots = 0;
-  let optimalCo2G = baselineCo2G;
-
-  for (let s = -maxSlots; s <= maxSlots; s++) {
-    const co2 = computeCo2ForShift(loadSlots, intensitySlots, s);
-    curve.push({
-      shiftSlots: s,
-      shiftLabel: shiftLabel(s),
-      totalCo2G: co2,
-      isBaseline: s === 0,
-    });
-    if (co2 < optimalCo2G) {
-      optimalCo2G = co2;
-      optimalShiftSlots = s;
-    }
-  }
-
-  const savingsG = baselineCo2G - optimalCo2G;
-  return {
-    baselineCo2G,
-    optimalShiftSlots,
-    optimalCo2G,
-    savingsG,
-    savingsPercent: baselineCo2G > 0 ? (savingsG / baselineCo2G) * 100 : 0,
-    curve,
-  };
-}
-
-// ── Option 2: bounded local reshaping ──────────────────────────────────────────
+// ── Bounded local reshaping ──────────────────────────────────────────────────
 
 const RESHAPE_MAX_SHIFT_SLOTS = 4; // default ±60 minutes
 const RESHAPE_MAGNITUDE_BAND = 0.2; // default ±20% of each slot's (shifted) original value
 
-/** Rotates a load profile by shiftSlots — the array form of computeCo2ForShift's rotation. */
+/** Rotates a load profile by shiftSlots - the array form of computeCo2ForShift's rotation. */
 export function rotateProfile(loadSlots: LoadProfileSlots, shiftSlots: number): number[] {
   return Array.from(
     { length: SLOTS_PER_DAY },
@@ -251,18 +342,18 @@ export function rotateProfile(loadSlots: LoadProfileSlots, shiftSlots: number): 
 /**
  * Optimizes a load profile against an intensity curve under tight bounds:
  * each slot may move by at most `maxShiftSlots` and its value may change by
- * at most `magnitudeBand` of its (shifted) original — never above the
- * profile's historical peak, never below its lowest non-zero value — with
+ * at most `magnitudeBand` of its (shifted) original - never above the
+ * profile's historical peak, never below its lowest non-zero value - with
  * total daily energy conserved exactly (load is relocated, not created or
- * removed).
+ * removed). At `magnitudeBand = 0` this degenerates to a pure rigid shift
+ * (step 1 below is the only thing that can move the profile).
  *
  * Two-step solve:
- *  1. Search rigid shifts within ±maxShiftSlots and keep the best — same
- *     mechanism as analyzeShifts(), just range-limited.
+ *  1. Search rigid shifts within ±maxShiftSlots and keep the best.
  *  2. Given fixed per-slot [lower, upper] bounds and a fixed total, the cost
  *     (Σ slot × intensity) is minimized by filling the lowest-intensity slots
  *     to their upper bound first, in order, until the (fixed) total is used
- *     up — the exact optimum for a linear cost under box constraints plus one
+ *     up - the exact optimum for a linear cost under box constraints plus one
  *     equality constraint (a water-filling / fractional-knapsack argument),
  *     not just an iterative heuristic.
  */

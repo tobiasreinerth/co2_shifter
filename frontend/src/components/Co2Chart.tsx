@@ -12,23 +12,32 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
-import { DATA_MODE_LABELS, fetchIntensityCurve } from "@/lib/shift-calculator";
+import {
+  DATA_MODE_LABELS,
+  fetchGenerationMixCurve,
+  fetchIntensityCurve,
+  hourTickLabel,
+  slotLabel,
+} from "@/lib/shift-calculator";
 import type { DataMode } from "@/lib/shift-calculator";
 
 const DATA_MODE_IDS = Object.keys(DATA_MODE_LABELS) as DataMode[];
 
-/** X-axis tick label: full hours only ("08:00"), empty for the 15/30/45-min slots. */
-function slotLabel(i: number): string {
-  const h = Math.floor(i / 4);
-  const m = (i % 4) * 15;
-  if (m === 0) return `${String(h).padStart(2, "0")}:00`;
-  return "";
+interface ChartRow {
+  slot: number;
+  intensity: number | null;
+  renewable: number | null;
+  nuclear: number | null;
+  fossil: number | null;
 }
 
 /**
- * Full-day CO2 intensity chart: 96 15-min slots as an intensity line with a
- * renewable-share bar underlay. Region and time-period mode are controlled
- * by the dashboard page so ShiftCalculator can share the exact same period.
+ * Full-day CO2 intensity chart: 96 15-min slots as an intensity line, with a
+ * renewable/nuclear/fossil generation-mix stacked underneath it. Region and
+ * time-period mode are controlled by the dashboard page so ShiftCalculator
+ * can share the exact same period. The mix breakdown is only available for
+ * ENTSO-E-sourced regions (it needs per-source generation_mix); the
+ * intensity line still renders for other regions even when it's missing.
  */
 export function Co2Chart({
   region,
@@ -39,9 +48,7 @@ export function Co2Chart({
   dataMode: DataMode;
   onDataModeChange: (mode: DataMode) => void;
 }) {
-  const [chartData, setChartData] = useState<
-    { slot: number; label: string; intensity: number | null; renewable: number | null }[]
-  >([]);
+  const [chartData, setChartData] = useState<ChartRow[]>([]);
   const [caption, setCaption] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +58,10 @@ export function Co2Chart({
       setLoading(true);
       setError(null);
       try {
-        const curve = await fetchIntensityCurve(region, dataMode);
+        const [curve, mix] = await Promise.all([
+          fetchIntensityCurve(region, dataMode),
+          fetchGenerationMixCurve(region, dataMode),
+        ]);
         if (!curve) {
           setChartData([]);
           setCaption(null);
@@ -61,14 +71,15 @@ export function Co2Chart({
         setChartData(
           Array.from({ length: 96 }, (_, i) => ({
             slot: i,
-            label: slotLabel(i),
             intensity: curve.intensitySlots[i],
-            renewable: curve.renewableSlots[i],
+            renewable: mix?.renewableSlots[i] ?? null,
+            nuclear: mix?.nuclearSlots[i] ?? null,
+            fossil: mix?.fossilSlots[i] ?? null,
           }))
         );
         setCaption(
           curve.coverageDays !== null
-            ? `${curve.label} — ${curve.coverageDays} day${curve.coverageDays === 1 ? "" : "s"} of grid data available`
+            ? `${curve.label} - ${curve.coverageDays} day${curve.coverageDays === 1 ? "" : "s"} of grid data available`
             : curve.label
         );
       } catch (e) {
@@ -82,32 +93,45 @@ export function Co2Chart({
 
   return (
     <div className="rounded-xl border bg-white p-6 shadow-sm">
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <h3 className="font-medium">CO2 Intensity — 15-min resolution</h3>
-        <select
-          value={dataMode}
-          onChange={(e) => onDataModeChange(e.target.value as DataMode)}
-          className="rounded-md border px-2 py-1 text-sm"
-        >
-          {DATA_MODE_IDS.map((id) => (
-            <option key={id} value={id}>{DATA_MODE_LABELS[id]}</option>
-          ))}
-        </select>
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
+        <h3 className="font-medium">Carbon intensity through the day</h3>
+        <label className="flex items-center gap-2 text-xs text-gray-500">
+          Time period
+          <select
+            value={dataMode}
+            onChange={(e) => onDataModeChange(e.target.value as DataMode)}
+            className="rounded-md border px-2 py-1 text-sm text-gray-800"
+          >
+            {DATA_MODE_IDS.map((id) => (
+              <option key={id} value={id}>{DATA_MODE_LABELS[id]}</option>
+            ))}
+          </select>
+        </label>
       </div>
+      <p className="mb-3 text-sm text-gray-500">
+        Grams of CO2 per kWh generated, in 15-minute steps - lower is cleaner. The stacked bars
+        below show what the grid was actually running on: renewable, nuclear, or fossil.
+      </p>
 
       {caption && !error && <p className="mb-3 text-xs text-gray-400">{caption}</p>}
-      {error && <p className="mb-3 text-sm text-amber-600">{error}</p>}
+      {error && (
+        <p className="mb-3 text-sm text-amber-600">
+          We don&apos;t have carbon data for {region} yet for this period. Try a different region
+          or time period above.
+        </p>
+      )}
 
       {loading ? (
         <div className="flex h-48 items-center justify-center text-sm text-gray-400">
-          Loading…
+          Loading grid data…
         </div>
       ) : (
         <ResponsiveContainer width="100%" height={220}>
           <ComposedChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#d1d5db" />
             <XAxis
-              dataKey="label"
+              dataKey="slot"
+              tickFormatter={(slot: number) => hourTickLabel(slot)}
               tick={{ fontSize: 10 }}
               interval={0}
               tickLine={false}
@@ -120,31 +144,49 @@ export function Co2Chart({
               label={{ value: "gCO2/kWh", angle: -90, position: "insideLeft", style: { fontSize: 10 } }}
             />
             <YAxis
-              yAxisId="renewable"
+              yAxisId="mix"
               orientation="right"
               tick={{ fontSize: 10 }}
               unit="%"
               domain={[0, 100]}
+              allowDataOverflow
             />
             <Tooltip
               formatter={(v, name) =>
-                name === "intensity"
-                  ? [`${v} gCO2/kWh`, "CO2 intensity"]
-                  : [`${Number(v).toFixed(1)} %`, "Renewable %"]
+                name === "CO2 intensity"
+                  ? [`${v} gCO2/kWh`, name]
+                  : [`${Number(v).toFixed(1)} %`, name]
               }
               labelFormatter={(_, payload) =>
                 payload?.[0]
-                  ? `Slot ${payload[0].payload.slot} · ${slotLabel(payload[0].payload.slot) || "—"}`
+                  ? `Slot ${payload[0].payload.slot} · ${slotLabel(payload[0].payload.slot)}`
                   : ""
               }
             />
             <Legend />
             <Bar
-              yAxisId="renewable"
+              yAxisId="mix"
               dataKey="renewable"
+              stackId="mix"
               fill="#166534"
-              opacity={0.6}
+              opacity={0.7}
               name="Renewable %"
+            />
+            <Bar
+              yAxisId="mix"
+              dataKey="nuclear"
+              stackId="mix"
+              fill="#4a3aa7"
+              opacity={0.7}
+              name="Nuclear %"
+            />
+            <Bar
+              yAxisId="mix"
+              dataKey="fossil"
+              stackId="mix"
+              fill="#2a78d6"
+              opacity={0.7}
+              name="Fossil %"
               radius={[1, 1, 0, 0]}
             />
             <Line

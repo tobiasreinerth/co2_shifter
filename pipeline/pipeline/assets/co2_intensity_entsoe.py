@@ -26,68 +26,24 @@ from dagster import AssetExecutionContext, Config, Failure, asset
 from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from pipeline.entsoe_regions import REGION_TO_EIC
+from pipeline.entsoe_xml import (
+    RESOLUTION_MINUTES,
+    _find,
+    _findall,
+    raise_if_acknowledgement,
+)
 from pipeline.resources.supabase_resource import EmissionFactor, SupabaseResource
+
+__all__ = [
+    "REGION_TO_EIC",
+    "RESOLUTION_MINUTES",
+    "raise_if_acknowledgement",
+]
 
 SLOTS_PER_DAY = 96  # 24h × 4
 ENTSOE_API_URL = "https://web-api.tp.entsoe.eu/api"
 CHUNK_DAYS = 31  # max days per A75 request — bounds XML size and failure blast radius
-
-# Bidding-zone EIC codes offered as regions. Multi-zone countries (DK, NO, SE,
-# IT) appear per zone — ENTSO-E publishes no national feed for them.
-# No GB: stopped publishing to ENTSO-E 2021-06-15 (post-Brexit TCA);
-# use Elexon BMRS or carbonintensity.org.uk if GB support is needed.
-# No AL/MT/UA: valid EICs but no A75 generation data published (probed 2026-07-16).
-REGION_TO_EIC = {
-    "AT": "10YAT-APG------L",  # Austria
-    "BA": "10YBA-JPCC-----D",  # Bosnia and Herzegovina
-    "BE": "10YBE----------2",  # Belgium
-    "BG": "10YCA-BULGARIA-R",  # Bulgaria
-    "CH": "10YCH-SWISSGRIDZ",  # Switzerland
-    "CY": "10YCY-1001A0003J",  # Cyprus
-    "CZ": "10YCZ-CEPS-----N",  # Czechia
-    "DE": "10Y1001A1001A83F",  # Germany (DE-LU bidding zone)
-    "DK1": "10YDK-1--------W",  # Denmark West
-    "DK2": "10YDK-2--------M",  # Denmark East
-    "EE": "10Y1001A1001A39I",  # Estonia
-    "ES": "10YES-REE------0",  # Spain
-    "FI": "10YFI-1--------U",  # Finland
-    "FR": "10YFR-RTE------C",  # France
-    "GR": "10YGR-HTSO-----Y",  # Greece
-    "HR": "10YHR-HEP------M",  # Croatia
-    "HU": "10YHU-MAVIR----U",  # Hungary
-    "IE": "10Y1001A1001A59C",  # Ireland (SEM)
-    "IT-Calabria": "10Y1001C--00096J",
-    "IT-Centre-North": "10Y1001A1001A70O",
-    "IT-Centre-South": "10Y1001A1001A71M",
-    "IT-North": "10Y1001A1001A73I",
-    "IT-Sardinia": "10Y1001A1001A74G",
-    "IT-Sicily": "10Y1001A1001A75E",
-    "IT-South": "10Y1001A1001A788",
-    "LT": "10YLT-1001A0008Q",  # Lithuania
-    "LV": "10YLV-1001A00074",  # Latvia
-    "MD": "10Y1001A1001A990",  # Moldova
-    "ME": "10YCS-CG-TSO---S",  # Montenegro
-    "MK": "10YMK-MEPSO----8",  # North Macedonia
-    "NL": "10YNL----------L",  # Netherlands
-    "NO1": "10YNO-1--------2",  # Norway Oslo
-    "NO2": "10YNO-2--------T",  # Norway Kristiansand
-    "NO3": "10YNO-3--------J",  # Norway Trondheim
-    "NO4": "10YNO-4--------9",  # Norway Tromsø
-    "NO5": "10Y1001A1001A48H",  # Norway Bergen
-    "PL": "10YPL-AREA-----S",  # Poland
-    "PT": "10YPT-REN------W",  # Portugal
-    "RO": "10YRO-TEL------P",  # Romania
-    "RS": "10YCS-SERBIATSOV",  # Serbia
-    "SE1": "10Y1001A1001A44P",  # Sweden Luleå
-    "SE2": "10Y1001A1001A45N",  # Sweden Sundsvall
-    "SE3": "10Y1001A1001A46L",  # Sweden Stockholm
-    "SE4": "10Y1001A1001A47J",  # Sweden Malmö
-    "SI": "10YSI-ELES-----O",  # Slovenia
-    "SK": "10YSK-SEPS-----K",  # Slovakia
-    "XK": "10Y1001C--00100H",  # Kosovo
-}
-
-RESOLUTION_MINUTES = {"PT15M": 15, "PT30M": 30, "PT60M": 60}
 
 # psr_type -> {slot start (UTC) -> generated MWh}
 GenerationByType = dict[str, dict[datetime, float]]
@@ -115,44 +71,6 @@ class IntensitySlot(BaseModel):
     renewable_percentage: float
     generation_mix: dict[str, float]  # source_name -> share % of generation
     source: str = "entsoe"
-
-
-def _localname(tag: str) -> str:
-    """Strips the XML namespace from a tag ('{ns}Point' → 'Point')."""
-    return tag.rsplit("}", 1)[-1]
-
-
-def _find(el: ElementTree.Element, name: str) -> ElementTree.Element | None:
-    """Returns the first descendant with the given namespace-free tag name."""
-    for child in el.iter():
-        if _localname(child.tag) == name:
-            return child
-    return None
-
-
-def _findall(el: ElementTree.Element, name: str) -> list[ElementTree.Element]:
-    """Returns all descendants with the given namespace-free tag name."""
-    return [child for child in el.iter() if _localname(child.tag) == name]
-
-
-def raise_if_acknowledgement(xml_text: str) -> None:
-    """Raises if the response is an Acknowledgement_MarketDocument.
-
-    ENTSO-E answers HTTP 200 with an acknowledgement document instead of data
-    when a query is valid but yields nothing (future date, wrong EIC, no
-    publication yet). Surface its Reason text instead of parsing zero series.
-    """
-    try:
-        root = ElementTree.fromstring(xml_text)
-    except ElementTree.ParseError as exc:
-        raise ValueError(f"ENTSO-E returned unparseable XML: {exc}") from exc
-    if _localname(root.tag) != "Acknowledgement_MarketDocument":
-        return
-    reason_el = _find(root, "text")
-    reason = (
-        reason_el.text.strip() if reason_el is not None and reason_el.text else "no reason given"
-    )
-    raise ValueError(f"ENTSO-E returned no data: {reason}")
 
 
 def parse_generation_xml(xml_text: str) -> GenerationByType:

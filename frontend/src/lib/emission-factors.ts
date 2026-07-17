@@ -3,7 +3,7 @@ import { supabase } from "./supabase";
 
 /**
  * Loads every lifecycle emission factor (gCO2eq/kWh per energy source),
- * sorted highest-intensity first. Global reference data — not region-specific.
+ * sorted highest-intensity first. Global reference data - not region-specific.
  */
 export async function fetchEmissionFactors(): Promise<EmissionFactor[]> {
   const { data, error } = await supabase

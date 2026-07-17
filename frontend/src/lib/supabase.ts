@@ -1,4 +1,4 @@
-/** Shared browser-side Supabase client (anon key — RLS applies). */
+/** Shared browser-side Supabase client (anon key - RLS applies). */
 import { createClient } from "@supabase/supabase-js";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;

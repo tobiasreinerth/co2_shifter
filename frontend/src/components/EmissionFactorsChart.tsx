@@ -49,7 +49,7 @@ interface ChartRow {
 /**
  * Groups sources sharing the same factor AND renewable status into one bar
  * (e.g. the 4 fossil sources tied at 820 g/kWh). Grouping never merges across
- * differing renewable status even at equal factors — Nuclear and Wind
+ * differing renewable status even at equal factors - Nuclear and Wind
  * Offshore both sit at 12 g/kWh but must stay visually distinct.
  */
 function groupFactors(factors: EmissionFactor[]): ChartRow[] {
@@ -142,7 +142,7 @@ function ChartTooltip({
  * source technology, sorted highest-intensity first, with a 🍃 marking
  * renewable sources. Sources sharing an identical factor (e.g. the 4 fossil
  * sources tied at 820 g/kWh) are grouped into one bar. Global data
- * (emission_factors table) — does not change per region, since the
+ * (emission_factors table) - does not change per region, since the
  * underlying technology factors are the same everywhere; shown before the
  * country selector for that reason.
  */
@@ -165,17 +165,21 @@ export function EmissionFactorsChart() {
 
   return (
     <div className="rounded-xl border bg-white p-6 shadow-sm">
-      <h3 className="font-medium">CO2 Intensity by Energy Source</h3>
+      <h3 className="font-medium">CO2 intensity by energy source</h3>
       <p className="mt-1 text-sm text-gray-500">
-        Lifecycle emissions per technology — the same everywhere, feeding every region&apos;s
-        intensity numbers below.
+        Same everywhere, regardless of region - this is what feeds into every grid&apos;s carbon
+        numbers below.
       </p>
 
-      {error && <p className="mt-3 text-sm text-amber-600">{error}</p>}
+      {error && (
+        <p className="mt-3 text-sm text-amber-600">
+          We couldn&apos;t load the reference emissions data ({error}). Try refreshing the page.
+        </p>
+      )}
 
       {loading ? (
         <div className="flex h-48 items-center justify-center text-sm text-gray-400">
-          Loading…
+          Loading reference data…
         </div>
       ) : (
         <>
@@ -210,8 +214,9 @@ export function EmissionFactorsChart() {
             </BarChart>
           </ResponsiveContainer>
           <p className="mt-2 text-xs text-gray-400">
-            🍃 = renewable source · Lifecycle gCO2eq/kWh — IPCC AR5 WGIII Annex III medians,
-            Electricity Maps defaults for types IPCC doesn&apos;t cover
+            🍃 = renewable source · Figures are lifecycle gCO2eq/kWh (i.e. including
+            manufacturing and fuel supply, not just the moment of generation) - IPCC AR5 WGIII
+            Annex III medians, with Electricity Maps defaults for types IPCC doesn&apos;t cover
           </p>
         </>
       )}

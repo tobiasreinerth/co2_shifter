@@ -13,11 +13,13 @@ import {
   CartesianGrid,
 } from "recharts";
 import {
+  fetchPriceCurve,
+  optimizeBoundedCostReshape,
+} from "@/lib/cost-shift-calculator";
+import {
   SLOTS_PER_DAY,
   DATA_MODE_LABELS,
-  fetchIntensityCurve,
   hourTickLabel,
-  optimizeBoundedReshape,
   slotLabel,
   type DataMode,
 } from "@/lib/shift-calculator";
@@ -27,23 +29,24 @@ const SHIFT_MINUTE_OPTIONS = [0, 30, 60, 120] as const;
 const MAGNITUDE_PERCENT_OPTIONS = [0, 10, 20, 30] as const;
 
 interface OptimizationResult {
-  baselineCo2G: number;
-  optimizedCo2G: number;
-  savingsG: number;
+  baselineCost: number;
+  optimizedCost: number;
+  savingsCost: number;
   savingsPercent: number;
+  currency: string;
   optimizedProfile: number[]; // the 96-slot "new schedule"
 }
 
 /**
- * CO2 optimization widget: region, time period, and the load profile all
- * come from the dashboard page, so this, Co2Chart, and CostShiftCalculator
- * never disagree on what schedule/period is being analyzed. Always runs
- * optimizeBoundedReshape() - a whole-day rigid shift is just the 0%-load-
- * change special case of this (only the time-shift search applies), so
- * there's no separate mode to pick. Never renders cost numbers -
- * CostShiftCalculator is a fully separate panel for that.
+ * Cost optimization widget: the price/cost analog of ShiftCalculator, kept
+ * as a fully separate component and result panel per the "never mix cost
+ * and CO2" requirement - region, time period, and the load profile all come
+ * from the dashboard page, so the two panels always analyze the identical
+ * schedule, just under a different cost function. Always runs
+ * optimizeBoundedCostReshape() - a whole-day rigid shift is just the
+ * 0%-load-change special case of this, so there's no separate mode to pick.
  */
-export function ShiftCalculator({
+export function CostShiftCalculator({
   region,
   dataMode,
   loadSlots,
@@ -55,7 +58,8 @@ export function ShiftCalculator({
   const [maxShiftMinutes, setMaxShiftMinutes] = useState<number>(60);
   const [magnitudePercent, setMagnitudePercent] = useState<number>(20);
   const [result, setResult] = useState<OptimizationResult | null>(null);
-  const [intensityForChart, setIntensityForChart] = useState<number[] | null>(null);
+  const [priceForChart, setPriceForChart] = useState<number[] | null>(null);
+  const [currency, setCurrency] = useState("EUR");
   const [caption, setCaption] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -68,37 +72,40 @@ export function ShiftCalculator({
     }
     setError(null);
     setResult(null);
-    setIntensityForChart(null);
+    setPriceForChart(null);
     setCaption(null);
     setLoading(true);
     try {
-      const curve = await fetchIntensityCurve(region, dataMode);
+      const curve = await fetchPriceCurve(region, dataMode);
       if (!curve) {
         setError(
-          `We don't have carbon data for ${region} for this period yet - try a different region or time period above.`
+          `We don't have day-ahead price data for ${region} for this period yet - try a different region or time period above.`
         );
         return;
       }
+      setCurrency(curve.currency);
       setCaption(
         curve.coverageDays !== null
-          ? `${curve.label} - ${curve.coverageDays} day${curve.coverageDays === 1 ? "" : "s"} of grid data available`
+          ? `${curve.label} - ${curve.coverageDays} day${curve.coverageDays === 1 ? "" : "s"} of price data available`
           : curve.label
       );
-      setIntensityForChart(curve.intensitySlots);
+      setPriceForChart(curve.priceSlots);
 
       const maxShiftSlots = maxShiftMinutes / 15;
       const magnitudeBand = magnitudePercent / 100;
-      const reshape = optimizeBoundedReshape(
+      const reshape = optimizeBoundedCostReshape(
         loadSlots,
-        curve.intensitySlots,
+        curve.priceSlots,
+        curve.currency,
         maxShiftSlots,
         magnitudeBand
       );
       setResult({
-        baselineCo2G: reshape.baselineCo2G,
-        optimizedCo2G: reshape.optimizedCo2G,
-        savingsG: reshape.savingsG,
+        baselineCost: reshape.baselineCost,
+        optimizedCost: reshape.optimizedCost,
+        savingsCost: reshape.savingsCost,
         savingsPercent: reshape.savingsPercent,
+        currency: reshape.currency,
         optimizedProfile: reshape.profile,
       });
     } catch (e) {
@@ -111,8 +118,9 @@ export function ShiftCalculator({
   return (
     <div className="space-y-8">
       <p className="text-xs text-gray-500">
-        Uses the grid data for the time period you picked above in step 2 (
-        {DATA_MODE_LABELS[dataMode]}) and the production schedule from Step 3.
+        Uses the time period you picked above in step 2 (
+        {DATA_MODE_LABELS[dataMode]}) and the production schedule from Step 3 - a separate,
+        cost-only calculation that&apos;s never combined with the carbon numbers.
       </p>
 
       <div>
@@ -120,7 +128,7 @@ export function ShiftCalculator({
         <ul className="list-disc space-y-1 pl-5 text-xs text-gray-500">
           <li>Each 15-minute slot can move within the time window you choose below</li>
           <li>Load never exceeds your equipment&apos;s historical maximum, and never drops below its historical minimum</li>
-          <li>Total daily energy stays exactly the same - consumption is relocated to cleaner moments, not added or removed</li>
+          <li>Total daily energy stays exactly the same - consumption is relocated to cheaper moments, not added or removed</li>
         </ul>
       </div>
 
@@ -163,18 +171,19 @@ export function ShiftCalculator({
       <button
         onClick={handleCompute}
         disabled={loading}
-        className="rounded-lg bg-green-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+        className="rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
       >
-        {loading ? "Computing…" : "Optimize my carbon savings"}
+        {loading ? "Computing…" : "Optimize my cost savings"}
       </button>
 
       {result && caption && <p className="text-xs text-gray-400">{caption}</p>}
 
-      {result && intensityForChart && (
+      {result && priceForChart && (
         <OptimizationResultView
           result={result}
           original={loadSlots}
-          intensitySlots={intensityForChart}
+          priceSlots={priceForChart}
+          currency={currency}
         />
       )}
     </div>
@@ -183,23 +192,26 @@ export function ShiftCalculator({
 
 /**
  * Renders the optimization outcome: original schedule (black), new schedule
- * (dark green), and the grid's CO2 intensity per slot as grey bars on a
- * compressed secondary axis (deliberately smaller than the load curves).
+ * (blue - deliberately distinct from ShiftCalculator's dark green so a cost
+ * result and a CO2 result are never visually confusable), and the day-ahead
+ * price per slot as grey bars on a compressed secondary axis.
  */
 function OptimizationResultView({
   result,
   original,
-  intensitySlots,
+  priceSlots,
+  currency,
 }: {
   result: OptimizationResult;
   original: LoadProfileSlots;
-  intensitySlots: number[];
+  priceSlots: number[];
+  currency: string;
 }) {
   const chartData = Array.from({ length: SLOTS_PER_DAY }, (_, i) => ({
     slot: i,
     original: original[i],
     optimized: result.optimizedProfile[i],
-    intensity: intensitySlots[i],
+    price: priceSlots[i],
   }));
 
   return (
@@ -207,23 +219,23 @@ function OptimizationResultView({
       <div className="grid gap-4 sm:grid-cols-3">
         <Stat
           label="Your schedule today"
-          value={`${(result.baselineCo2G / 1000).toFixed(2)} kg CO2`}
+          value={`${result.baselineCost.toFixed(2)} ${result.currency}`}
         />
         <Stat
           label="Shifted schedule"
-          value={`${(result.optimizedCo2G / 1000).toFixed(2)} kg CO2`}
+          value={`${result.optimizedCost.toFixed(2)} ${result.currency}`}
           highlight
         />
         <Stat
           label="What you'd save"
-          value={`${(result.savingsG / 1000).toFixed(2)} kg CO2 (${result.savingsPercent.toFixed(1)} %)`}
-          highlight={result.savingsG > 0}
+          value={`${result.savingsCost.toFixed(2)} ${result.currency} (${result.savingsPercent.toFixed(1)} %)`}
+          highlight={result.savingsCost > 0}
         />
       </div>
 
       <div>
         <p className="mb-2 text-sm font-medium text-gray-600">
-          Your original schedule vs. the lower-carbon version
+          Your original schedule vs. the lower-cost version
         </p>
         <ResponsiveContainer width="100%" height={240}>
           <ComposedChart data={chartData}>
@@ -237,15 +249,15 @@ function OptimizationResultView({
             />
             <YAxis yAxisId="load" tick={{ fontSize: 10 }} unit=" kWh" />
             <YAxis
-              yAxisId="intensity"
+              yAxisId="price"
               orientation="right"
               tick={{ fontSize: 10 }}
-              unit=" g"
               domain={[0, (max: number) => max * 2.5]}
+              tickFormatter={(v: number) => Math.round(v).toString()}
             />
             <Tooltip
               formatter={(v, name) => {
-                if (name === "Grid CO2 intensity") return [`${v} gCO2/kWh`, name];
+                if (name === "Day-ahead price") return [`${v} ${currency}/MWh`, name];
                 return [`${v} kWh`, name];
               }}
               labelFormatter={(_, payload) =>
@@ -254,11 +266,11 @@ function OptimizationResultView({
             />
             <Legend />
             <Bar
-              yAxisId="intensity"
-              dataKey="intensity"
+              yAxisId="price"
+              dataKey="price"
               fill="#9ca3af"
               opacity={0.5}
-              name="Grid CO2 intensity"
+              name="Day-ahead price"
               radius={[1, 1, 0, 0]}
             />
             <Line
@@ -274,7 +286,7 @@ function OptimizationResultView({
               yAxisId="load"
               type="monotone"
               dataKey="optimized"
-              stroke="#166534"
+              stroke="#1d4ed8"
               strokeWidth={2}
               dot={false}
               name="Shifted schedule"
@@ -282,15 +294,15 @@ function OptimizationResultView({
           </ComposedChart>
         </ResponsiveContainer>
         <p className="mt-1 text-xs text-gray-400">
-          Black = your original schedule · Dark green = the shifted schedule · Grey bars = grid
-          carbon intensity for that slot
+          Black = your original schedule · Blue = the shifted schedule · Grey bars =
+          day-ahead price for that slot
         </p>
       </div>
     </div>
   );
 }
 
-/** Small labeled stat tile; highlight renders the value in green. */
+/** Small labeled stat tile; highlight renders the value in blue. */
 function Stat({
   label,
   value,
@@ -303,7 +315,7 @@ function Stat({
   return (
     <div>
       <p className="text-xs text-gray-500">{label}</p>
-      <p className={`mt-0.5 text-lg font-semibold ${highlight ? "text-green-700" : ""}`}>
+      <p className={`mt-0.5 text-lg font-semibold ${highlight ? "text-blue-700" : ""}`}>
         {value}
       </p>
     </div>

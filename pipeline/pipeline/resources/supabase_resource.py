@@ -73,3 +73,22 @@ class SupabaseResource(ConfigurableResource):
             raise Failure(
                 description=f"Could not reach Supabase at {self.url}: {exc}"
             ) from exc
+
+    def upsert_day_ahead_prices(self, rows: list[dict[str, object]]) -> None:
+        """Upserts price rows into day_ahead_prices on (region, timestamp).
+
+        Raises dagster.Failure with the Supabase error detail so ingestion runs
+        fail loudly instead of silently dropping data.
+        """
+        try:
+            self.get_client().table("day_ahead_prices").upsert(
+                rows, on_conflict="region,timestamp"
+            ).execute()
+        except APIError as exc:
+            raise Failure(
+                description=f"Supabase upsert into day_ahead_prices failed: {exc.message}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise Failure(
+                description=f"Could not reach Supabase at {self.url}: {exc}"
+            ) from exc

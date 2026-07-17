@@ -3,7 +3,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "CO2 Shifter",
-  description: "Reduce your carbon footprint by shifting production to low-intensity windows",
+  description:
+    "Cut your carbon footprint and your electricity bill by shifting production to cleaner, cheaper hours",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
