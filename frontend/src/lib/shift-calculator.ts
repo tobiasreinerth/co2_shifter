@@ -76,12 +76,26 @@ export async function fetchAverageIntensity(
   return data ?? [];
 }
 
+/** Returns the ISO date ("YYYY-MM-DD") n UTC days before the given one. */
+export function daysBeforeIsoDate(date: string, n: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Returns the ISO date ("YYYY-MM-DD") one UTC day before the given one. */
+export function priorIsoDate(date: string): string {
+  return daysBeforeIsoDate(date, 1);
+}
+
 /**
  * Finds the most recent date a region has any co2_readings for, and loads
  * that full day. Returns null if the region has no data at all. The
  * resolved date is returned alongside the readings since "latest" is
  * otherwise opaque to the caller (ingestion can lag, so it isn't always
- * yesterday).
+ * yesterday). If the most recent date is still a partial day (e.g. today,
+ * before the rest of its slots have been published/ingested), falls back
+ * to the prior day so "1 day" never shows a half-populated curve.
  */
 export async function fetchLatestDayIntensity(
   region: string
@@ -98,6 +112,15 @@ export async function fetchLatestDayIntensity(
 
   const date = (data[0].timestamp as string).slice(0, 10); // stored as UTC timestamptz
   const readings = await fetchDayIntensity(region, date);
+
+  if (readings.length < SLOTS_PER_DAY) {
+    const priorDate = priorIsoDate(date);
+    const priorReadings = await fetchDayIntensity(region, priorDate);
+    if (priorReadings.length > 0) {
+      return { date: priorDate, readings: priorReadings };
+    }
+  }
+
   return { date, readings };
 }
 
@@ -113,11 +136,15 @@ export const DATA_MODE_LABELS: Record<DataMode, string> = {
   avg91: "3 months (91 days)",
 };
 
+/** DataMode keys, in display order - shared by every "Time period" select. */
+export const DATA_MODE_IDS = Object.keys(DATA_MODE_LABELS) as DataMode[];
+
 export interface IntensityCurve {
   intensitySlots: number[];
   renewableSlots: (number | null)[];
   label: string;
   coverageDays: number | null; // null for "latest" (a single day, not a window)
+  windowEndDate: string | null; // null for "latest" (already dated in `label`)
 }
 
 /**
@@ -150,6 +177,7 @@ export async function fetchIntensityCurve(
       renewableSlots,
       label: `1 day - ${latest.date}`,
       coverageDays: null,
+      windowEndDate: null,
     };
   }
 
@@ -168,6 +196,7 @@ export async function fetchIntensityCurve(
     renewableSlots,
     label: DATA_MODE_LABELS[windowDays === 28 ? "avg28" : "avg91"],
     coverageDays: Math.max(...rows.map((r) => r.days_covered)),
+    windowEndDate: rows[0].window_end_date,
   };
 }
 
@@ -340,46 +369,20 @@ export function rotateProfile(loadSlots: LoadProfileSlots, shiftSlots: number): 
 }
 
 /**
- * Optimizes a load profile against an intensity curve under tight bounds:
- * each slot may move by at most `maxShiftSlots` and its value may change by
- * at most `magnitudeBand` of its (shifted) original - never above the
- * profile's historical peak, never below its lowest non-zero value - with
- * total daily energy conserved exactly (load is relocated, not created or
- * removed). At `magnitudeBand = 0` this degenerates to a pure rigid shift
- * (step 1 below is the only thing that can move the profile).
- *
- * Two-step solve:
- *  1. Search rigid shifts within ±maxShiftSlots and keep the best.
- *  2. Given fixed per-slot [lower, upper] bounds and a fixed total, the cost
- *     (Σ slot × intensity) is minimized by filling the lowest-intensity slots
- *     to their upper bound first, in order, until the (fixed) total is used
- *     up - the exact optimum for a linear cost under box constraints plus one
- *     equality constraint (a water-filling / fractional-knapsack argument),
- *     not just an iterative heuristic.
+ * Water-fills one already-shifted profile against intensity: per-slot
+ * [lower, upper] bounds are derived from `shiftedProfile`, then the fixed
+ * total is distributed cheapest-intensity-slot-first up to each slot's
+ * upper bound - the exact optimum for a linear cost under box constraints
+ * plus one equality constraint (a fractional-knapsack argument), not a
+ * heuristic, for this one fixed shift.
  */
-export function optimizeBoundedReshape(
-  loadSlots: LoadProfileSlots,
+function waterFillReshape(
+  shiftedProfile: number[],
   intensitySlots: number[],
-  maxShiftSlots: number = RESHAPE_MAX_SHIFT_SLOTS,
-  magnitudeBand: number = RESHAPE_MAGNITUDE_BAND
-): BoundedReshapeResult {
-  const baselineCo2G = computeCo2ForShift(loadSlots, intensitySlots, 0);
-
-  let bestShift = 0;
-  let bestShiftCo2 = baselineCo2G;
-  for (let s = -maxShiftSlots; s <= maxShiftSlots; s++) {
-    const co2 = computeCo2ForShift(loadSlots, intensitySlots, s);
-    if (co2 < bestShiftCo2) {
-      bestShiftCo2 = co2;
-      bestShift = s;
-    }
-  }
-  const shiftedProfile = rotateProfile(loadSlots, bestShift);
-
-  const maxLoad = Math.max(...loadSlots);
-  const nonZero = loadSlots.filter((v) => v > 0);
-  const minNonZeroLoad = nonZero.length > 0 ? Math.min(...nonZero) : 0;
-
+  maxLoad: number,
+  minNonZeroLoad: number,
+  magnitudeBand: number
+): { profile: number[]; cost: number } {
   const lower = shiftedProfile.map((v) =>
     v > 0 ? Math.max(v * (1 - magnitudeBand), minNonZeroLoad) : 0
   );
@@ -403,13 +406,152 @@ export function optimizeBoundedReshape(
     remaining -= take;
   }
 
-  const optimizedCo2G = computeCo2ForShift(profile, intensitySlots, 0);
+  return { profile, cost: computeCo2ForShift(profile, intensitySlots, 0) };
+}
+
+/**
+ * Optimizes a load profile against an intensity curve under tight bounds:
+ * each slot may move by at most `maxShiftSlots` and its value may change by
+ * at most `magnitudeBand` of its (shifted) original - never above the
+ * profile's historical peak, never below its lowest non-zero value - with
+ * total daily energy conserved exactly (load is relocated, not created or
+ * removed). At `magnitudeBand = 0` this degenerates to a pure rigid shift.
+ *
+ * Jointly exact solve: for every candidate shift within ±maxShiftSlots, the
+ * per-slot bounds it implies are water-filled to the exact optimum (see
+ * waterFillReshape), and shifts are compared on that POST-reshape cost, not
+ * the pre-reshape rigid-shift cost - a shift that looks worse unshifted can
+ * still unlock a cheaper reshape once resizing is allowed, so scoring only
+ * the final reshaped cost per shift is what makes the search jointly exact.
+ * At most ~17 water-fill passes total (one per candidate shift, for the
+ * largest shift-window option) - cheap enough to always do the full search.
+ */
+export function optimizeBoundedReshape(
+  loadSlots: LoadProfileSlots,
+  intensitySlots: number[],
+  maxShiftSlots: number = RESHAPE_MAX_SHIFT_SLOTS,
+  magnitudeBand: number = RESHAPE_MAGNITUDE_BAND
+): BoundedReshapeResult {
+  const baselineCo2G = computeCo2ForShift(loadSlots, intensitySlots, 0);
+
+  const maxLoad = Math.max(...loadSlots);
+  const nonZero = loadSlots.filter((v) => v > 0);
+  const minNonZeroLoad = nonZero.length > 0 ? Math.min(...nonZero) : 0;
+
+  let bestShift = 0;
+  let bestProfile = loadSlots.slice();
+  let bestCost = Infinity;
+
+  for (let s = -maxShiftSlots; s <= maxShiftSlots; s++) {
+    const { profile: candidate, cost } = waterFillReshape(
+      rotateProfile(loadSlots, s),
+      intensitySlots,
+      maxLoad,
+      minNonZeroLoad,
+      magnitudeBand
+    );
+    if (cost < bestCost) {
+      bestCost = cost;
+      bestShift = s;
+      bestProfile = candidate;
+    }
+  }
+
+  const optimizedCo2G = bestCost;
   const savingsG = baselineCo2G - optimizedCo2G;
+
+  const magnitudePercents: (number | null)[] = loadSlots.map((v, i) => {
+    if (v === 0) return null; // never moves (lower=upper=0 forces it to stay 0) - excluded by design
+    const newIndex = ((i + bestShift) % SLOTS_PER_DAY + SLOTS_PER_DAY) % SLOTS_PER_DAY;
+    return ((bestProfile[newIndex] - v) / v) * 100;
+  });
+
   return {
-    profile: profile.map((v) => Math.round(v * 10) / 10),
+    profile: bestProfile.map((v) => Math.round(v * 10) / 10),
     baselineCo2G,
     optimizedCo2G,
     savingsG,
     savingsPercent: baselineCo2G > 0 ? (savingsG / baselineCo2G) * 100 : 0,
+    shiftSlots: bestShift,
+    magnitudePercents,
+  };
+}
+
+// ── Reporting the shift/magnitude breakdown (shared by CO2 and cost panels) ────
+
+export interface MagnitudeHighlight {
+  percent: number; // signed: +12.3 or -30
+  oldSlot: number; // original slot index i
+  newSlot: number; // (i + shiftSlots) mod 96
+  tieCount: number; // count of OTHER original slots tied at this exact percent (0 = none)
+}
+
+export interface ReshapeSummary {
+  shiftLabel: string; // "Schedule moved 45 min earlier" / "…later" / "No time shift applied"
+  increase: MagnitudeHighlight | null; // null if no non-null entries, or max <= 0
+  decrease: MagnitudeHighlight | null; // null if no non-null entries, or min >= 0
+}
+
+/** Formats a percent for display: whole numbers as-is, else 1 decimal. */
+export function formatMagnitudePercent(p: number): string {
+  const r = Math.round(p * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+}
+
+function pickExtreme(
+  entries: { p: number; i: number }[],
+  shiftSlots: number,
+  which: "max" | "min"
+): MagnitudeHighlight | null {
+  if (entries.length === 0) return null;
+  const extreme =
+    which === "max"
+      ? Math.max(...entries.map((e) => e.p))
+      : Math.min(...entries.map((e) => e.p));
+  if (which === "max" && extreme <= 0) return null;
+  if (which === "min" && extreme >= 0) return null;
+
+  // Tie-group on 2-decimal precision, not raw float equality: water-filling
+  // ties are exact in practice, but this guards against float noise without
+  // merging genuinely-different percents that round the same at display precision.
+  const key = Math.round(extreme * 100);
+  const tied = entries.filter((e) => Math.round(e.p * 100) === key).sort((a, b) => a.i - b.i);
+  const first = tied[0];
+  return {
+    percent: extreme,
+    oldSlot: first.i,
+    newSlot: ((first.i + shiftSlots) % SLOTS_PER_DAY + SLOTS_PER_DAY) % SLOTS_PER_DAY,
+    tieCount: tied.length - 1,
+  };
+}
+
+/**
+ * Turns optimizeBoundedReshape()'s shiftSlots + magnitudePercents into the
+ * two headline facts the result panels show: how far the whole schedule
+ * moved (the rigid shift), and the single biggest magnitude increase/
+ * decrease from the per-slot resizing - reported against each ORIGINAL
+ * slot's own time and value, with "old" → "new" showing where that slot's
+ * content ended up after the shift. Shared between ShiftCalculator and
+ * CostShiftCalculator so tie-counting and formatting can never drift
+ * between the two panels.
+ */
+export function summarizeReshape(
+  shiftSlots: number,
+  magnitudePercents: (number | null)[]
+): ReshapeSummary {
+  const minutes = Math.abs(shiftSlots) * 15;
+  const shiftLabel =
+    shiftSlots === 0
+      ? "No time shift applied"
+      : `Schedule moved ${minutes} min ${shiftSlots > 0 ? "later" : "earlier"}`;
+
+  const entries = magnitudePercents
+    .map((p, i) => ({ p, i }))
+    .filter((e): e is { p: number; i: number } => e.p !== null);
+
+  return {
+    shiftLabel,
+    increase: pickExtreme(entries, shiftSlots, "max"),
+    decrease: pickExtreme(entries, shiftSlots, "min"),
   };
 }

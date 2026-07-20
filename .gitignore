@@ -231,3 +231,4 @@ supabase/.temp/
 
 # Dagster scratch
 .tmp_dagster_home_*/
+pipeline/.dagster_home/

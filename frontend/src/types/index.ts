@@ -18,6 +18,7 @@ export interface AvgIntensitySlot {
   avg_intensity_gco2_kwh: number;
   avg_renewable_percentage: number | null;
   days_covered: number;             // how many days of history back this slot
+  window_end_date: string;          // ISO date "YYYY-MM-DD" - last UTC day with data for this region
 }
 
 // One row of the avg_generation_mix_by_slot() RPC: rolling average
@@ -65,6 +66,8 @@ export interface BoundedReshapeResult {
   optimizedCo2G: number;
   savingsG: number;
   savingsPercent: number;
+  shiftSlots: number;                    // chosen rigid shift (bestShift), in 15-min slots; + = later, - = earlier
+  magnitudePercents: (number | null)[];   // 96-length, indexed by ORIGINAL slot i; null where loadSlots[i] === 0 (never moves)
 }
 
 export interface EmissionFactor {
@@ -94,6 +97,7 @@ export interface AvgPriceSlot {
   avg_price: number;
   currency: string;
   days_covered: number;
+  window_end_date: string;   // ISO date "YYYY-MM-DD" - last UTC day with data for this region
 }
 
 // Mirrors BoundedReshapeResult but for cost - never mixed with the CO2 result
@@ -104,4 +108,6 @@ export interface CostBoundedReshapeResult {
   savingsCost: number;
   savingsPercent: number;
   currency: string;
+  shiftSlots: number;
+  magnitudePercents: (number | null)[];
 }

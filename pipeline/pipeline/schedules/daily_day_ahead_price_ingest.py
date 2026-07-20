@@ -11,7 +11,7 @@ daemon (`dagster dev`) is running.
 from collections.abc import Iterator
 from datetime import timedelta
 
-from dagster import RunRequest, ScheduleEvaluationContext, schedule
+from dagster import DefaultScheduleStatus, RunRequest, ScheduleEvaluationContext, schedule
 
 from pipeline.entsoe_regions import REGION_TO_EIC
 from pipeline.jobs.day_ahead_price_job import ingest_day_ahead_prices_job
@@ -21,6 +21,7 @@ from pipeline.jobs.day_ahead_price_job import ingest_day_ahead_prices_job
     cron_schedule="0 6 * * *",
     job=ingest_day_ahead_prices_job,
     execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
 )
 def daily_day_ahead_price_schedule(
     context: ScheduleEvaluationContext,

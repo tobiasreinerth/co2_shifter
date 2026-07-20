@@ -12,10 +12,14 @@ import {
   CartesianGrid,
 } from "recharts";
 import { fetchPriceCurve } from "@/lib/cost-shift-calculator";
-import { DATA_MODE_LABELS, hourTickLabel, slotLabel } from "@/lib/shift-calculator";
+import {
+  DATA_MODE_IDS,
+  DATA_MODE_LABELS,
+  daysBeforeIsoDate,
+  hourTickLabel,
+  slotLabel,
+} from "@/lib/shift-calculator";
 import type { DataMode } from "@/lib/shift-calculator";
-
-const DATA_MODE_IDS = Object.keys(DATA_MODE_LABELS) as DataMode[];
 
 /**
  * Full-day day-ahead price chart: 96 15-min slots as a price line. Region
@@ -59,9 +63,14 @@ export function PriceChart({
             price: curve.priceSlots[i],
           }))
         );
+        const windowDays = dataMode === "avg28" ? 28 : dataMode === "avg91" ? 91 : null;
+        const dateRange =
+          curve.windowEndDate && windowDays
+            ? `${daysBeforeIsoDate(curve.windowEndDate, windowDays - 1)} to ${curve.windowEndDate}`
+            : null;
         setCaption(
           curve.coverageDays !== null
-            ? `${curve.label} - ${curve.coverageDays} day${curve.coverageDays === 1 ? "" : "s"} of price data available`
+            ? `${curve.label} average - ${curve.coverageDays} day${curve.coverageDays === 1 ? "" : "s"} of price data available${dateRange ? ` (${dateRange})` : ""}`
             : curve.label
         );
       } catch (e) {
@@ -128,7 +137,10 @@ export function PriceChart({
               }}
             />
             <Tooltip
-              formatter={(v) => [`${v} ${currency}/MWh`, "Day-ahead price"]}
+              formatter={(v) => [
+                `${currency} ${v}/MWh`,
+                dataMode === "latest" ? "Day-ahead price" : "Avg day-ahead price",
+              ]}
               labelFormatter={(_, payload) =>
                 payload?.[0]
                   ? `Slot ${payload[0].payload.slot} · ${slotLabel(payload[0].payload.slot)}`
@@ -142,7 +154,7 @@ export function PriceChart({
               stroke="#1d4ed8"
               dot={false}
               strokeWidth={2}
-              name="Day-ahead price"
+              name={dataMode === "latest" ? "Day-ahead price" : "Avg day-ahead price"}
               connectNulls
             />
           </ComposedChart>

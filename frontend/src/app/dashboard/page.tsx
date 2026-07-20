@@ -34,8 +34,8 @@ function StepLabel({ children }: { children: React.ReactNode }) {
  */
 export default function DashboardPage() {
   const [region, setRegion] = useState("DE");
-  const [dataMode, setDataMode] = useState<DataMode>("latest");
-  const [priceDataMode, setPriceDataMode] = useState<DataMode>("latest");
+  const [dataMode, setDataMode] = useState<DataMode>("avg91");
+  const [priceDataMode, setPriceDataMode] = useState<DataMode>("avg91");
   const [loadSlots, setLoadSlots] = useState<LoadProfileSlots>(
     new Array(SLOTS_PER_DAY).fill(0)
   );
@@ -71,18 +71,17 @@ export default function DashboardPage() {
 
       <div>
         <StepLabel>Step 1</StepLabel>
-        <label className="flex max-w-xs flex-col gap-1 text-sm">
-          <span className="font-medium text-gray-800">Choose your grid region</span>
-          <select
-            value={region}
-            onChange={(e) => setRegion(e.target.value)}
-            className="rounded-md border px-3 py-2"
-          >
-            {REGIONS.map((r) => (
-              <option key={r.code} value={r.code}>{r.label}</option>
-            ))}
-          </select>
-        </label>
+        <h3 className="mb-1 font-medium">Choose your grid region</h3>
+        <select
+          value={region}
+          onChange={(e) => setRegion(e.target.value)}
+          aria-label="Choose your grid region"
+          className="max-w-xs rounded-md border px-3 py-2"
+        >
+          {REGIONS.map((r) => (
+            <option key={r.code} value={r.code}>{r.label}</option>
+          ))}
+        </select>
         <p className="mt-2 max-w-md text-xs text-gray-500">
           Prices and carbon intensity are set locally - let us know where your site is based,
           and we&apos;ll pull the right grid data.
@@ -106,7 +105,7 @@ export default function DashboardPage() {
 
       <div>
         <StepLabel>Step 3</StepLabel>
-        <h3 className="mb-1 font-medium">Tell us your production schedule</h3>
+        <h3 className="mb-1 font-medium">Tell us your typical production schedule</h3>
         <p className="mb-3 max-w-2xl text-sm text-gray-500">
           Only you know this: how much power your operation draws, slot by slot, across a
           typical day. Pick an example pattern to start (still fully editable), upload a CSV, or
@@ -130,16 +129,16 @@ export default function DashboardPage() {
             <p className="mb-3 max-w-2xl text-sm text-gray-500">
               In kilograms of CO2 avoided for the day, based on your grid&apos;s carbon intensity.
             </p>
-            <ShiftCalculator region={region} dataMode={dataMode} loadSlots={loadSlots} />
+            <ShiftCalculator region={region} loadSlots={loadSlots} />
           </div>
 
           <div>
             <StepLabel>Step 4b</StepLabel>
             <h4 className="mb-1 font-medium text-blue-800">Lower your electricity bill</h4>
             <p className="mb-3 max-w-2xl text-sm text-gray-500">
-              In your local currency, based on the day-ahead wholesale price.
+              In the day-ahead market&apos;s settlement currency (not always your local one), based on the wholesale price.
             </p>
-            <CostShiftCalculator region={region} dataMode={priceDataMode} loadSlots={loadSlots} />
+            <CostShiftCalculator region={region} loadSlots={loadSlots} />
           </div>
         </div>
       </div>

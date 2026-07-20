@@ -88,6 +88,18 @@ function ProfileChart({ slots }: { slots: LoadProfileSlots }) {
 }
 
 /**
+ * Picks the field delimiter for one CSV line: semicolon or tab if present
+ * (unambiguous even when values use a comma decimal mark), else falls back
+ * to comma - otherwise a semicolon-delimited European file like "00:00;2,1"
+ * would have its comma decimal wrongly treated as a second delimiter.
+ */
+function splitCsvLine(line: string): string[] {
+  if (line.includes(";")) return line.split(";");
+  if (line.includes("\t")) return line.split("\t");
+  return line.split(",");
+}
+
+/**
  * Parses an uploaded load-profile CSV into 96 kWh values.
  * Accepts one value per row (last numeric column wins, comma decimals ok);
  * returns an error message string instead of throwing on invalid input.
@@ -102,8 +114,8 @@ function parseCSV(text: string): LoadProfileSlots | string {
   // or two-column CSV (time, kwh) - we just take the last numeric column
   const values: number[] = [];
   for (const line of lines) {
-    const cols = line.split(/[,;\t]/);
-    const raw = cols[cols.length - 1].replace(",", ".");
+    const cols = splitCsvLine(line);
+    const raw = cols[cols.length - 1].trim().replace(",", ".");
     const n = parseFloat(raw);
     if (isNaN(n)) continue; // skip header rows
     if (n < 0) return "kWh values must be ≥ 0";

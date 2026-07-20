@@ -9,6 +9,7 @@ import {
   SLOTS_PER_DAY,
   forwardFillMasked,
   optimizeBoundedReshape,
+  priorIsoDate,
   type DataMode,
 } from "./shift-calculator";
 import { supabase } from "./supabase";
@@ -58,7 +59,9 @@ export async function fetchAveragePrices(
 
 /**
  * Finds the most recent date a region has any day_ahead_prices for, and
- * loads that full day. Returns null if the region has no data at all.
+ * loads that full day. Returns null if the region has no data at all. If
+ * the most recent date is still a partial day, falls back to the prior day
+ * (same rationale as fetchLatestDayIntensity).
  */
 export async function fetchLatestDayPrices(
   region: string
@@ -75,6 +78,15 @@ export async function fetchLatestDayPrices(
 
   const date = (data[0].timestamp as string).slice(0, 10);
   const readings = await fetchDayPrices(region, date);
+
+  if (readings.length < SLOTS_PER_DAY) {
+    const priorDate = priorIsoDate(date);
+    const priorReadings = await fetchDayPrices(region, priorDate);
+    if (priorReadings.length > 0) {
+      return { date: priorDate, readings: priorReadings };
+    }
+  }
+
   return { date, readings };
 }
 
@@ -83,6 +95,7 @@ export interface PriceCurve {
   currency: string;
   label: string;
   coverageDays: number | null; // null for "latest" (a single day, not a window)
+  windowEndDate: string | null; // null for "latest" (already dated in `label`)
 }
 
 /**
@@ -117,6 +130,7 @@ export async function fetchPriceCurve(
       currency,
       label: `1 day - ${latest.date}`,
       coverageDays: null,
+      windowEndDate: null,
     };
   }
 
@@ -136,6 +150,7 @@ export async function fetchPriceCurve(
     currency,
     label: DATA_MODE_LABELS[windowDays === 28 ? "avg28" : "avg91"],
     coverageDays: Math.max(...rows.map((r) => r.days_covered)),
+    windowEndDate: rows[0].window_end_date,
   };
 }
 
@@ -175,5 +190,7 @@ export function optimizeBoundedCostReshape(
     savingsCost: result.savingsG,
     savingsPercent: result.savingsPercent,
     currency,
+    shiftSlots: result.shiftSlots,
+    magnitudePercents: result.magnitudePercents,
   };
 }

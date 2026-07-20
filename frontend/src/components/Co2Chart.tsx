@@ -13,15 +13,15 @@ import {
   CartesianGrid,
 } from "recharts";
 import {
+  DATA_MODE_IDS,
   DATA_MODE_LABELS,
+  daysBeforeIsoDate,
   fetchGenerationMixCurve,
   fetchIntensityCurve,
   hourTickLabel,
   slotLabel,
 } from "@/lib/shift-calculator";
 import type { DataMode } from "@/lib/shift-calculator";
-
-const DATA_MODE_IDS = Object.keys(DATA_MODE_LABELS) as DataMode[];
 
 interface ChartRow {
   slot: number;
@@ -77,9 +77,14 @@ export function Co2Chart({
             fossil: mix?.fossilSlots[i] ?? null,
           }))
         );
+        const windowDays = dataMode === "avg28" ? 28 : dataMode === "avg91" ? 91 : null;
+        const dateRange =
+          curve.windowEndDate && windowDays
+            ? `${daysBeforeIsoDate(curve.windowEndDate, windowDays - 1)} to ${curve.windowEndDate}`
+            : null;
         setCaption(
           curve.coverageDays !== null
-            ? `${curve.label} - ${curve.coverageDays} day${curve.coverageDays === 1 ? "" : "s"} of grid data available`
+            ? `${curve.label} average - ${curve.coverageDays} day${curve.coverageDays === 1 ? "" : "s"} of grid data available${dateRange ? ` (${dateRange})` : ""}`
             : curve.label
         );
       } catch (e) {
@@ -153,7 +158,7 @@ export function Co2Chart({
             />
             <Tooltip
               formatter={(v, name) =>
-                name === "CO2 intensity"
+                String(name).includes("CO2 intensity")
                   ? [`${v} gCO2/kWh`, name]
                   : [`${Number(v).toFixed(1)} %`, name]
               }
@@ -196,7 +201,7 @@ export function Co2Chart({
               stroke="#000000"
               dot={false}
               strokeWidth={2}
-              name="CO2 intensity"
+              name={dataMode === "latest" ? "CO2 intensity" : "Avg CO2 intensity"}
               connectNulls
             />
           </ComposedChart>

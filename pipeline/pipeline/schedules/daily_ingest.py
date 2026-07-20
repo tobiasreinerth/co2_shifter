@@ -10,7 +10,7 @@ is running.
 from collections.abc import Iterator
 from datetime import timedelta
 
-from dagster import RunRequest, ScheduleEvaluationContext, schedule
+from dagster import DefaultScheduleStatus, RunRequest, ScheduleEvaluationContext, schedule
 
 from pipeline.assets.co2_intensity_entsoe import REGION_TO_EIC
 from pipeline.jobs.entsoe_job import ingest_entsoe_job
@@ -20,6 +20,7 @@ from pipeline.jobs.entsoe_job import ingest_entsoe_job
     cron_schedule="0 6 * * *",
     job=ingest_entsoe_job,
     execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
 )
 def daily_entsoe_ingest_schedule(
     context: ScheduleEvaluationContext,
