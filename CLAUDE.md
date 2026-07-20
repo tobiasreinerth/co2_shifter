@@ -28,8 +28,7 @@ The result is a bar chart showing total daily CO2 for every possible shift, high
 ## Stack
 
 - **Data pipeline**: Python + Dagster — daily schedule at 06:00 UTC (needs a running Dagster daemon) plus on-demand runs/backfills
-- **CO2 API (primary)**: ENTSO-E Transparency Platform — `web-api.tp.entsoe.eu/api`, documentType A75 (actual generation per type); intensity derived as generation-weighted mean of lifecycle emission factors (production-based, ignores imports/exports)
-- **CO2 API (legacy/alternative)**: Electricity Maps — `api.electricitymaps.com/v3/carbon-intensity/history`
+- **CO2 API**: ENTSO-E Transparency Platform — `web-api.tp.entsoe.eu/api`, documentType A75 (actual generation per type); intensity derived as generation-weighted mean of lifecycle emission factors (production-based, ignores imports/exports)
 - **Database**: Supabase (Postgres) — `supabase-py` in pipeline, `@supabase/supabase-js` in frontend
 - **Frontend**: Next.js 15 App Router, TypeScript, Tailwind CSS v4, Recharts
 
@@ -44,7 +43,7 @@ export DAGSTER_HOME=$(pwd)/.dagster_home  # persists run history + schedule stat
 dagster dev          # Dagster UI at http://localhost:3000
 ```
 
-Trigger a data ingest via the Dagster UI → Jobs → `ingest_co2_job`, passing config:
+Trigger a data ingest via the Dagster UI → Jobs → `ingest_entsoe_job`, passing config:
 ```json
 { "region": "DE", "fetch_date": "2024-06-01" }
 ```
@@ -67,7 +66,6 @@ supabase db push     # apply migrations
 ### pipeline/.env
 ```
 ENTSOE_API_KEY=
-ELECTRICITY_MAPS_API_KEY=
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
 ```
@@ -102,8 +100,6 @@ Both ENTSO-E assets upsert on `(region, timestamp)`. Config: `{region, fetch_dat
 
 - `co2_readings_entsoe` (job `ingest_entsoe_job`) — fetches actual generation per production type from ENTSO-E (A75) and derives 15-min production-based CO2 intensity plus the per-source `generation_mix`. Emission factors come from the `emission_factors` table (loaded each run). Regions: ~50 bidding zones (`REGION_TO_EIC` in `pipeline/entsoe_regions.py`, shared with the price asset; multi-zone countries DK/NO/SE/IT appear per zone; GB unavailable — stopped publishing to ENTSO-E post-Brexit). `daily_entsoe_ingest_schedule` runs it at 06:00 UTC per region for the last two full days (idempotent re-ingest catches ENTSO-E's late corrections) — only while a Dagster daemon runs.
 - `day_ahead_prices_entsoe` (job `ingest_day_ahead_prices_job`) — fetches day-ahead auction prices from ENTSO-E (A44) and stores them per 15-min slot (native currency, not converted). Uses the same `REGION_TO_EIC` map, with one override: DE's current DE-LU zone EIC has no A44 data on the Transparency Platform (verified via direct API probe), so `PRICE_EIC_OVERRIDES` in the asset substitutes the pre-2018 combined DE-AT-LU code, which does. `daily_day_ahead_price_schedule` runs it at 06:00 UTC per region for the last two full days (prices for both days are already finalized by then, so no forward-looking window is needed).
-- `co2_readings_synthetic` (job `seed_co2_job`) — hardcoded stylized curve, dev/demo placeholder; real data overwrites it for the same day.
-- `co2_readings_daily` (job `ingest_co2_job`) — legacy Electricity Maps history fetch.
 
 ## Frontend Components
 
@@ -129,8 +125,8 @@ These apply to all code changes, in every session.
 - **Type hints on every function** — parameters and return types, including tests and private helpers. `mypy` is configured strict in `pyproject.toml`.
 - **Docstrings on every function and class** — one line minimum; explain the *why* and non-obvious behavior (e.g. API quirks), not a restatement of the name.
 - **No `print()`** — use `context.log` inside Dagster assets/ops, the stdlib `logging` module elsewhere.
-- **Error handling on every external call** (ENTSO-E, Electricity Maps, Supabase):
-  - HTTP errors must include the response body snippet — both APIs put the real reason in the body, not the status line.
+- **Error handling on every external call** (ENTSO-E, Supabase):
+  - HTTP errors must include the response body snippet — ENTSO-E puts the real reason in the body, not the status line.
   - ENTSO-E answers HTTP 200 with an `Acknowledgement_MarketDocument` when there is no data — check via `raise_if_acknowledgement()` before parsing.
   - Supabase writes go through `SupabaseResource.upsert_co2_readings()`, which wraps errors in `dagster.Failure` with detail. Don't call `.table(...).upsert(...)` directly from assets.
   - Assets fail loudly (`dagster.Failure` with an actionable description) — never swallow errors and continue with partial data.
