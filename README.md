@@ -39,32 +39,6 @@ Three simple stages, each doing one job:
 - **Database**: [Supabase](https://supabase.com) (Postgres) — schema, RLS policies, and averaging functions live in `supabase/migrations/`
 - **Frontend**: Next.js 15 (App Router), TypeScript, Tailwind CSS v4, Recharts — deployed on Vercel
 
-## Getting started
-
-### Pipeline (fetches grid data)
-```bash
-cd pipeline
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-export DAGSTER_HOME=$(pwd)/.dagster_home
-dagster dev   # UI at http://localhost:3000
-```
-Trigger an ingest via the Dagster UI → Jobs → `ingest_entsoe_job`, config `{ "region": "DE", "fetch_date": "2024-06-01" }`. The daily schedule (06:00 UTC) only fires while `dagster dev` (or a Dagster daemon) is running.
-
-### Frontend (the dashboard)
-```bash
-cd frontend
-npm install
-npm run dev   # http://localhost:3001/dashboard
-```
-
-### Database
-```bash
-supabase db push   # applies migrations in supabase/migrations/
-```
-
-Each of the three needs its own `.env` — see `pipeline/.env.example` and the Environment Variables section in `CLAUDE.md`.
-
 ## Where to go for more detail
 
-This README is the quick overview. For a full technical breakdown — exact schema, every Dagster asset, every frontend component's behavior and rationale, engineering conventions, verification steps — see **[`CLAUDE.md`](./CLAUDE.md)**. It's written to onboard an AI coding assistant cold into this codebase each session, which in practice makes it the most complete and up-to-date technical reference in the repo — worth reading if you're onboarding as a human too.
+This README is the pitch. For everything else — local dev setup for all three layers, exact schema, every Dagster asset, every frontend component's behavior and rationale, engineering conventions, verification steps — see **[`CLAUDE.md`](./CLAUDE.md)**. It's written to onboard an AI coding assistant cold into this codebase each session, which in practice makes it the most complete and up-to-date technical reference in the repo — worth reading if you're onboarding as a human too.
